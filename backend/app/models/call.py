@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import Integer, String, DateTime, ForeignKey, func, UniqueConstraint
+from sqlalchemy import (
+    Integer,
+    String,
+    DateTime,
+    ForeignKey,
+    func,
+    UniqueConstraint,
+    Float,
+    BigInteger,
+)
 
 from app.db.base import Base
 
@@ -21,15 +30,51 @@ class Call(Base):
     mint: Mapped[str] = mapped_column(String(64), index=True)
     symbol: Mapped[str] = mapped_column(String(32), default="")
 
-    status: Mapped[str] = mapped_column(String(32), default="RECORDING")  
+    status: Mapped[str] = mapped_column(String(32), default="RECORDING")
     # RECORDING | DONE | IGNORED_NO_PRICE
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     duration_sec: Mapped[int] = mapped_column(Integer, default=1500)
 
-    entry_price_usd: Mapped[float | None] = mapped_column(default=None)  # first price recorded
+    # first price recorded
+    entry_price_usd: Mapped[float | None] = mapped_column(Float, default=None)
     ignore_reason: Mapped[str | None] = mapped_column(String(200), default=None)
 
+    # =========================
+    # Snapshot fields (NO FILTERS)
+    # Captured once near entry, from Dexscreener token endpoint.
+    # =========================
+    snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    # Pair identity
+    pair_address: Mapped[str | None] = mapped_column(String(128), default=None)
+    dex_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    pair_created_at_ms: Mapped[int | None] = mapped_column(BigInteger, default=None)
+
+    # Market snapshot
+    liquidity_usd: Mapped[float | None] = mapped_column(Float, default=None)
+    fdv: Mapped[float | None] = mapped_column(Float, default=None)
+    market_cap: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # Volume snapshot
+    vol_m5: Mapped[float | None] = mapped_column(Float, default=None)
+    vol_h1: Mapped[float | None] = mapped_column(Float, default=None)
+    vol_h6: Mapped[float | None] = mapped_column(Float, default=None)
+    vol_h24: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # Price change snapshot
+    pc_m5: Mapped[float | None] = mapped_column(Float, default=None)
+    pc_h1: Mapped[float | None] = mapped_column(Float, default=None)
+    pc_h6: Mapped[float | None] = mapped_column(Float, default=None)
+    pc_h24: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # Txns snapshot (buys/sells)
+    buys_m5: Mapped[int | None] = mapped_column(Integer, default=None)
+    sells_m5: Mapped[int | None] = mapped_column(Integer, default=None)
+    buys_h1: Mapped[int | None] = mapped_column(Integer, default=None)
+    sells_h1: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # relationships
     channel = relationship("Channel", back_populates="calls")
     prices = relationship("PricePoint", back_populates="call", cascade="all, delete-orphan")
     display_result = relationship("StrategyResult", back_populates="call", uselist=False, cascade="all, delete-orphan")
