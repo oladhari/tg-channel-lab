@@ -1,3 +1,4 @@
+// frontend/src/lib/telegram.ts
 export function normalizeTelegramUsername(input: string): string {
   let s = (input || "").trim();
   if (!s) return "";
@@ -13,4 +14,10 @@ export function normalizeTelegramUsername(input: string): string {
 
   s = s.replace(/[^a-zA-Z0-9_]/g, "");
   return s.toLowerCase();
+}
+
+// optional convenience:
+export function telegramProfileUrlFromInput(input: string): string {
+  const u = normalizeTelegramUsername(input);
+  return u ? `https://t.me/${u}` : "";
 }

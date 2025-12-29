@@ -1,9 +1,50 @@
-// frontend/src/app/page.tsx
-import AddChannelForm from "./AddChannelForm";
-import { getChannels, getPaperStats } from "../lib/api";
+// frontend/src/app/DashboardClient.tsx
+"use client";
 
-export default async function Home() {
-  const [channels, stats] = await Promise.all([getChannels(), getPaperStats()]);
+import { useCallback, useState } from "react";
+
+// import your existing components here
+// Example: import ChannelCreateForm from "./ChannelCreateForm";
+// If your form is located elsewhere, update the import path.
+import ChannelCreateForm from "./ChannelCreateForm";
+
+type Channel = {
+  id: number;
+  key: string;
+  telegram_username: string;
+  enabled: boolean;
+  live_enabled: boolean;
+};
+
+type PaperStats = {
+  channel_id: number;
+  key: string;
+  telegram_username: string;
+  strategy_key: string;
+  start_balance_sol: number;
+  end_balance_sol: number;
+  n_trades: number;
+  tp: number;
+  sl: number;
+  time: number;
+  win_rate_tp_pct: number;
+  avg_pnl_pct: number;
+};
+
+type Props = {
+  initialChannels: Channel[];
+  initialStats: PaperStats[];
+};
+
+export default function DashboardClient({ initialChannels, initialStats }: Props) {
+  const [channels, setChannels] = useState<Channel[]>(initialChannels);
+  const [stats] = useState<PaperStats[]>(initialStats);
+
+  // This handler must live in a Client Component (here), not in app/page.tsx
+  const handleAdded = useCallback((created: Channel) => {
+    // prepend newest channel or refetch if you prefer
+    setChannels((prev) => [created, ...prev]);
+  }, []);
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -18,8 +59,11 @@ export default async function Home() {
         </a>
       </p>
 
-      {/* Client component (no props needed) */}
-      <AddChannelForm />
+      {/* Your channel create UI (client) goes here */}
+      <section style={{ marginTop: 18 }}>
+        <h2 style={{ marginBottom: 10 }}>Add Channel</h2>
+        <ChannelCreateForm onAdded={handleAdded} />
+      </section>
 
       <section style={{ marginTop: 28 }}>
         <h2 style={{ marginBottom: 10 }}>Channels</h2>
@@ -40,7 +84,11 @@ export default async function Home() {
                   <td>{c.id}</td>
                   <td>{c.key}</td>
                   <td>
-                    <a href={`https://t.me/${c.telegram_username}`} target="_blank" rel="noreferrer">
+                    <a
+                      href={`https://t.me/${c.telegram_username}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
                       @{c.telegram_username}
                     </a>
                   </td>
@@ -48,7 +96,6 @@ export default async function Home() {
                   <td>{c.live_enabled ? "✅" : "❌"}</td>
                 </tr>
               ))}
-
               {channels.length === 0 && (
                 <tr>
                   <td colSpan={5} style={{ padding: 14, color: "#666" }}>
@@ -79,9 +126,13 @@ export default async function Home() {
             </thead>
             <tbody>
               {stats.map((s) => (
-                <tr key={`${s.channel_id}-${s.strategy_key}`} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                <tr
+                  key={`${s.channel_id}-${s.strategy_key}`}
+                  style={{ borderBottom: "1px solid #f0f0f0" }}
+                >
                   <td>
-                    <b>{s.key}</b> <span style={{ color: "#666" }}>@{s.telegram_username}</span>
+                    <b>{s.key}</b>{" "}
+                    <span style={{ color: "#666" }}>@{s.telegram_username}</span>
                   </td>
                   <td>{s.n_trades}</td>
                   <td>{s.tp}</td>
@@ -95,7 +146,6 @@ export default async function Home() {
                   </td>
                 </tr>
               ))}
-
               {stats.length === 0 && (
                 <tr>
                   <td colSpan={8} style={{ padding: 14, color: "#666" }}>
