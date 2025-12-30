@@ -1,5 +1,8 @@
+# backend/app/settings.py
 from __future__ import annotations
+import os
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 class Settings(BaseSettings):
     APP_ENV: str = "prod"
@@ -9,7 +12,9 @@ class Settings(BaseSettings):
 
     TELEGRAM_API_ID: int
     TELEGRAM_API_HASH: str
-    TELEGRAM_SESSION_NAME: str = "tg_lab_session"
+
+    # Accept TELEGRAM_SESSION_NAME, but also allow TELEGRAM_SESSION (your current .env)
+    TELEGRAM_SESSION_NAME: str = Field(default="tg_lab_session", validation_alias="TELEGRAM_SESSION")
 
     SCAN_DELAY_SEC: int = 6
     RECORDING_WINDOW_MIN: int = 25
@@ -18,7 +23,11 @@ class Settings(BaseSettings):
     SIM_TP_PCT: float = 35.0
     SIM_SL_PCT: float = 20.0
 
+    # ✅ amount per trade for paper stats
+    PAPER_ENTRY_SOL: float = 0.1
+
     class Config:
         env_file = ".env"
+        extra = "ignore"  # don't crash if .env has extra keys
 
 settings = Settings()

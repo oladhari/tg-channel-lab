@@ -1,9 +1,11 @@
+# backend/app/routes/stats.py
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.settings import settings
 from app.db.session import SessionLocal
 from app.models import Channel, Call, StrategyResult
 from app.schemas.stats import PaperStatsOut
@@ -19,15 +21,26 @@ def _round2(x: float) -> float:
 def paper_stats(
     strategy_key: str = Query(default="tp35_sl20"),
     start_balance_sol: float = Query(default=1.0, gt=0),
+    entry_sol: float | None = Query(default=None, gt=0),
 ):
     """
     Paper stats per channel for a given strategy_key.
-    Compounding rule:
-      balance *= (1 + pnl_pct/100) per CLOSED trade (one StrategyResult row).
+
+    IMPORTANT:
+    Previously this endpoint compounded the entire balance:
+      balance *= (1 + pnl_pct/100)
+
+    Now it applies pnl_pct only to a per-trade position size (entry_sol):
+      pnl_sol = position_sol * (pnl_pct/100)
+      balance += pnl_sol
+
+    Where:
+      position_sol = min(entry_sol, current_balance)  # cannot trade more than you have
     """
+    trade_entry_sol = float(entry_sol) if entry_sol is not None else float(getattr(settings, "PAPER_ENTRY_SOL", 0.1))
+
     db: Session = SessionLocal()
     try:
-        # Pull all results with channel info in one query, ordered by time for compounding
         rows = db.execute(
             select(
                 Channel.id,
@@ -43,8 +56,7 @@ def paper_stats(
             .order_by(Channel.id.asc(), Call.started_at.asc(), StrategyResult.id.asc())
         ).all()
 
-        # Group per channel
-        per = {}
+        per: dict[int, dict] = {}
         for channel_id, key, username, outcome, pnl_pct, started_at in rows:
             if channel_id not in per:
                 per[channel_id] = {
@@ -73,10 +85,12 @@ def paper_stats(
             else:
                 rec["time"] += 1
 
-            # compound
-            rec["end_balance_sol"] *= (1.0 + float(pnl_pct) / 100.0)
+            # ✅ apply pnl on position size, not full balance
+            bal = float(rec["end_balance_sol"])
+            pos = min(trade_entry_sol, bal)
+            pnl_sol = pos * (float(pnl_pct) / 100.0)
+            rec["end_balance_sol"] = bal + pnl_sol
 
-        # Build response
         out_list: list[PaperStatsOut] = []
         for rec in per.values():
             n = rec["n_trades"]
@@ -100,7 +114,6 @@ def paper_stats(
                 )
             )
 
-        # Sort: most trades first, then best balance
         out_list.sort(key=lambda x: (x.n_trades, x.end_balance_sol), reverse=True)
         return out_list
 
