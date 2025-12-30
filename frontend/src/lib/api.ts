@@ -1,8 +1,22 @@
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+// frontend/src/lib/api.ts
+
+function baseUrl(): string {
+  const publicBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+  const backendBase = process.env.BACKEND_URL || "http://api:8000";
+
+  // Server-side (Node/SSR): MUST be absolute URL
+  if (typeof window === "undefined") {
+    return backendBase.replace(/\/$/, "");
+  }
+
+  // Client-side (browser): can be relative ("/api") or absolute
+  return publicBase.replace(/\/$/, "");
+}
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = `${API_BASE}${path}`;
+  const p = path.startsWith("/") ? path : `/${path}`;
+  const url = `${baseUrl()}${p}`;
+
   const res = await fetch(url, {
     ...init,
     headers: {
@@ -13,9 +27,16 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const j = await res.json().catch(() => null);
+      const msg = j?.detail || j?.message || JSON.stringify(j);
+      throw new Error(`HTTP ${res.status} ${res.statusText} — ${msg}`);
+    }
     const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status} ${res.statusText} — ${text}`);
   }
+
   return (await res.json()) as T;
 }
 
@@ -46,10 +67,7 @@ export function getChannels() {
   return http<Channel[]>("/channels");
 }
 
-export function getPaperStats(params?: {
-  strategy_key?: string;
-  start_balance_sol?: number;
-}) {
+export function getPaperStats(params?: { strategy_key?: string; start_balance_sol?: number }) {
   const strategy_key = params?.strategy_key ?? "tp35_sl20";
   const start_balance_sol = params?.start_balance_sol ?? 1.0;
 

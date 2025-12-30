@@ -180,6 +180,10 @@ def main() -> None:
     while True:
         now_ts = time.time()
 
+        # ✅ define defaults so sleep() can never crash
+        calls: list[Call] = []
+        fast_needed = False
+
         db = SessionLocal()
         try:
             calls = db.query(Call).filter(Call.status == "RECORDING").all()
@@ -207,7 +211,9 @@ def main() -> None:
 
         except Exception as e:
             db.rollback()
+            # ✅ keep loop alive even if DB schema mismatch etc.
             print(f"[RECORDER] error: {e}")
+
         finally:
             db.close()
 

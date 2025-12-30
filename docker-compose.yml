@@ -24,14 +24,13 @@ services:
   frontend:
     build: ./frontend
     environment:
-      # IMPORTANT: frontend container must reach backend container
-      NEXT_PUBLIC_API_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: /api
+      BACKEND_URL: http://api:8000
     depends_on:
       - api
     ports:
       - "3000:3000"
     restart: unless-stopped
-
 
   listener:
     build: ./backend

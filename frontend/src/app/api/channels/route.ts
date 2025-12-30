@@ -1,17 +1,21 @@
 // frontend/src/app/api/channels/route.ts
 import { NextResponse } from "next/server";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://backend:8000";
+const BACKEND_URL = (process.env.BACKEND_URL || "http://api:8000").replace(/\/$/, "");
 
 export async function GET() {
-  const r = await fetch(`${BACKEND_URL}/channels`, {
-    cache: "no-store",
-  });
+  const r = await fetch(`${BACKEND_URL}/channels`, { cache: "no-store" });
 
   const ct = r.headers.get("content-type") || "";
-  const body = ct.includes("application/json") ? await r.json() : await r.text();
 
-  return NextResponse.json(body, { status: r.status });
+  if (ct.includes("application/json")) {
+    const body = await r.json();
+    return NextResponse.json(body, { status: r.status });
+  }
+
+  const text = await r.text();
+  // wrap text so client always gets JSON from /api/*
+  return NextResponse.json({ detail: text.slice(0, 1000) }, { status: r.status });
 }
 
 export async function POST(req: Request) {
@@ -24,12 +28,15 @@ export async function POST(req: Request) {
   });
 
   const ct = r.headers.get("content-type") || "";
-  const body = ct.includes("application/json") ? await r.json() : await r.text();
 
-  // If backend returns text error, wrap it as JSON for frontend readability
-  if (!ct.includes("application/json") && !r.ok) {
-    return NextResponse.json({ detail: String(body).slice(0, 500) }, { status: r.status });
+  if (ct.includes("application/json")) {
+    const body = await r.json();
+    return NextResponse.json(body, { status: r.status });
   }
 
-  return NextResponse.json(body, { status: r.status });
+  const text = await r.text();
+  return NextResponse.json(
+    { detail: text.slice(0, 1000) },
+    { status: r.status }
+  );
 }
