@@ -1,5 +1,4 @@
 // frontend/src/lib/api.ts
-
 function baseUrl(): string {
   const publicBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
   const backendBase = process.env.BACKEND_URL || "http://api:8000";
@@ -67,7 +66,12 @@ export function getChannels() {
   return http<Channel[]>("/channels");
 }
 
-export function getPaperStats(params?: { strategy_key?: string; start_balance_sol?: number }) {
+export function getPaperStats(params?: {
+  strategy_key?: string;
+  start_balance_sol?: number;
+  entry_sol?: number;
+  channel_key?: string;
+}) {
   const strategy_key = params?.strategy_key ?? "tp35_sl20";
   const start_balance_sol = params?.start_balance_sol ?? 1.0;
 
@@ -75,6 +79,9 @@ export function getPaperStats(params?: { strategy_key?: string; start_balance_so
     strategy_key,
     start_balance_sol: String(start_balance_sol),
   });
+
+  if (params?.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
+  if (params?.channel_key) qs.set("channel_key", params.channel_key);
 
   return http<PaperStat[]>(`/stats/paper?${qs.toString()}`);
 }

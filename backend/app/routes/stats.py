@@ -1,4 +1,3 @@
-# backend/app/routes/stats.py
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
@@ -22,6 +21,7 @@ def paper_stats(
     strategy_key: str = Query(default="tp35_sl20"),
     start_balance_sol: float = Query(default=1.0, gt=0),
     entry_sol: float | None = Query(default=None, gt=0),
+    channel_key: str | None = Query(default=None),
 ):
     """
     Paper stats per channel for a given strategy_key.
@@ -41,7 +41,7 @@ def paper_stats(
 
     db: Session = SessionLocal()
     try:
-        rows = db.execute(
+        stmt = (
             select(
                 Channel.id,
                 Channel.key,
@@ -53,8 +53,15 @@ def paper_stats(
             .join(Call, Call.channel_id == Channel.id)
             .join(StrategyResult, StrategyResult.call_id == Call.id)
             .where(StrategyResult.strategy_key == strategy_key)
-            .order_by(Channel.id.asc(), Call.started_at.asc(), StrategyResult.id.asc())
-        ).all()
+        )
+
+        # ✅ optional filter: stats for a single channel only
+        if channel_key:
+            stmt = stmt.where(Channel.key == channel_key)
+
+        stmt = stmt.order_by(Channel.id.asc(), Call.started_at.asc(), StrategyResult.id.asc())
+
+        rows = db.execute(stmt).all()
 
         per: dict[int, dict] = {}
         for channel_id, key, username, outcome, pnl_pct, started_at in rows:

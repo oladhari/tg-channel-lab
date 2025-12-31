@@ -1,3 +1,4 @@
+// frontend/src/app/calls/[id]/page.tsx
 import { getCall, getCallPrices } from "../../../lib/api";
 import CallChart from "./CallChart";
 

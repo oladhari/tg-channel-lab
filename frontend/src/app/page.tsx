@@ -1,9 +1,34 @@
 // frontend/src/app/page.tsx
 import AddChannelForm from "./AddChannelForm";
+import PaperControls from "./PaperControls";
 import { getChannels, getPaperStats } from "../lib/api";
 
-export default async function Home() {
-  const [channels, stats] = await Promise.all([getChannels(), getPaperStats()]);
+function toNum(v: string | undefined, fallback: number) {
+  if (!v) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function makeStrategyKey(tp: number, sl: number) {
+  return `tp${tp}_sl${sl}`;
+}
+
+export default async function Home({
+  searchParams,
+}: {
+  searchParams?: { [key: string]: string | string[] | undefined };
+}) {
+  const tp = toNum(typeof searchParams?.tp === "string" ? searchParams.tp : undefined, 35);
+  const sl = toNum(typeof searchParams?.sl === "string" ? searchParams.sl : undefined, 20);
+  const start = toNum(typeof searchParams?.start === "string" ? searchParams.start : undefined, 1.0);
+  const entry = toNum(typeof searchParams?.entry === "string" ? searchParams.entry : undefined, 0.1);
+
+  const strategy_key = makeStrategyKey(tp, sl);
+
+  const [channels, stats] = await Promise.all([
+    getChannels(),
+    getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry }),
+  ]);
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -18,8 +43,9 @@ export default async function Home() {
         </a>
       </p>
 
-      {/* Client component (no props needed) */}
       <AddChannelForm />
+
+      <PaperControls />
 
       <section style={{ marginTop: 28 }}>
         <h2 style={{ marginBottom: 10 }}>Channels</h2>
@@ -38,7 +64,11 @@ export default async function Home() {
               {channels.map((c) => (
                 <tr key={c.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
                   <td>{c.id}</td>
-                  <td>{c.key}</td>
+                  <td>
+                    <a href={`/channels/${c.key}`} style={{ textDecoration: "underline" }}>
+                      {c.key}
+                    </a>
+                  </td>
                   <td>
                     <a href={`https://t.me/${c.telegram_username}`} target="_blank" rel="noreferrer">
                       @{c.telegram_username}
@@ -62,7 +92,9 @@ export default async function Home() {
       </section>
 
       <section style={{ marginTop: 28 }}>
-        <h2 style={{ marginBottom: 10 }}>Paper Stats (tp35_sl20)</h2>
+        <h2 style={{ marginBottom: 10 }}>
+          Paper Stats ({strategy_key}) — start {start} SOL, entry {entry} SOL
+        </h2>
         <div style={{ overflowX: "auto" }}>
           <table cellPadding={10} style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
@@ -81,7 +113,10 @@ export default async function Home() {
               {stats.map((s) => (
                 <tr key={`${s.channel_id}-${s.strategy_key}`} style={{ borderBottom: "1px solid #f0f0f0" }}>
                   <td>
-                    <b>{s.key}</b> <span style={{ color: "#666" }}>@{s.telegram_username}</span>
+                    <a href={`/channels/${s.key}`} style={{ textDecoration: "underline" }}>
+                      <b>{s.key}</b>
+                    </a>{" "}
+                    <span style={{ color: "#666" }}>@{s.telegram_username}</span>
                   </td>
                   <td>{s.n_trades}</td>
                   <td>{s.tp}</td>
