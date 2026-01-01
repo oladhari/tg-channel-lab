@@ -1,3 +1,4 @@
+# backend/app/schemas/stats.py
 from __future__ import annotations
 
 from pydantic import BaseModel

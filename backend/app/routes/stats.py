@@ -1,3 +1,4 @@
+# backend/app/routes/stats.py
 from __future__ import annotations
 
 from fastapi import APIRouter, Query

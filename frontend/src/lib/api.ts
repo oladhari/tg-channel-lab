@@ -49,7 +49,7 @@ export type Channel = {
 
 export type PaperStat = {
   channel_id: number;
-  key: string;
+  key: string; // ✅ this is the channel key
   telegram_username: string;
   strategy_key: string;
   start_balance_sol: number;

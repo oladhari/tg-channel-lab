@@ -2,6 +2,8 @@
 import PaperControls from "../../PaperControls";
 import { getChannels, getCalls, getPaperStats } from "../../../lib/api";
 
+export const dynamic = "force-dynamic";
+
 function toNum(v: string | undefined, fallback: number) {
   if (!v) return fallback;
   const n = Number(v);
@@ -12,30 +14,48 @@ function makeStrategyKey(tp: number, sl: number) {
   return `tp${tp}_sl${sl}`;
 }
 
-export default async function ChannelPage({
-  params,
-  searchParams,
-}: {
-  params: { key: string };
-  searchParams?: { [k: string]: string | string[] | undefined };
-}) {
-  const channelKey = params.key;
+type SearchParams = { [k: string]: string | string[] | undefined };
 
-  const tp = toNum(typeof searchParams?.tp === "string" ? searchParams.tp : undefined, 35);
-  const sl = toNum(typeof searchParams?.sl === "string" ? searchParams.sl : undefined, 20);
-  const start = toNum(typeof searchParams?.start === "string" ? searchParams.start : undefined, 1.0);
-  const entry = toNum(typeof searchParams?.entry === "string" ? searchParams.entry : undefined, 0.1);
+export default async function ChannelPage(props: {
+  params: any; // can be object OR Promise in some Next versions
+  searchParams?: any; // can be object OR Promise in some Next versions
+}) {
+  const params = await Promise.resolve(props.params);
+  const searchParams: SearchParams = await Promise.resolve(props.searchParams ?? {});
+
+  const channelKeyRaw = params?.key;
+  const channelKey = typeof channelKeyRaw === "string" ? channelKeyRaw : "";
+
+  const tp = toNum(typeof searchParams.tp === "string" ? searchParams.tp : undefined, 35);
+  const sl = toNum(typeof searchParams.sl === "string" ? searchParams.sl : undefined, 20);
+  const start = toNum(typeof searchParams.start === "string" ? searchParams.start : undefined, 1.0);
+  const entry = toNum(typeof searchParams.entry === "string" ? searchParams.entry : undefined, 0.1);
 
   const strategy_key = makeStrategyKey(tp, sl);
 
   const [channels, statsArr, calls] = await Promise.all([
     getChannels(),
-    getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry, channel_key: channelKey }),
-    getCalls({ channel_key: channelKey, strategy_key, limit: 200, offset: 0 }),
+    // backend supports channel_key => ask only for this channel
+    channelKey
+      ? getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry, channel_key: channelKey })
+      : getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry }),
+    channelKey
+      ? getCalls({ channel_key: channelKey, strategy_key, limit: 200, offset: 0 })
+      : getCalls({ strategy_key, limit: 200, offset: 0 }),
   ]);
 
-  const ch = channels.find((c) => c.key === channelKey) || null;
-  const stat = statsArr[0] || null;
+  const ch = channelKey ? channels.find((c) => c.key === channelKey) || null : null;
+
+  // PaperStatsOut uses "key" (channel key) from backend, NOT "channel_key"
+  const stat =
+    channelKey
+      ? (statsArr.find((s: any) => s.key === channelKey) ?? statsArr[0] ?? null)
+      : (statsArr[0] ?? null);
+
+  const telegramHref =
+    ch?.telegram_username && ch.telegram_username.trim().length > 0
+      ? `https://t.me/${ch.telegram_username.replace(/^@/, "")}`
+      : null;
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -45,19 +65,18 @@ export default async function ChannelPage({
         <a href="/calls" style={{ textDecoration: "underline" }}>Open Calls Explorer</a>
       </p>
 
-      <h1 style={{ marginBottom: 8 }}>Channel: {channelKey}</h1>
+      <h1 style={{ marginBottom: 8 }}>Channel: {channelKey || "(missing key!)"}</h1>
 
       {ch ? (
         <p style={{ marginTop: 0, color: "#444" }}>
           Telegram:{" "}
-          <a
-            href={`https://t.me/${ch.telegram_username}`}
-            target="_blank"
-            rel="noreferrer"
-            style={{ textDecoration: "underline" }}
-          >
-            @{ch.telegram_username}
-          </a>{" "}
+          {telegramHref ? (
+            <a href={telegramHref} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
+              @{ch.telegram_username.replace(/^@/, "")}
+            </a>
+          ) : (
+            <span>(not set)</span>
+          )}{" "}
           • enabled: {ch.enabled ? "✅" : "❌"} • live: {ch.live_enabled ? "✅" : "❌"}
         </p>
       ) : (
@@ -107,13 +126,20 @@ export default async function ChannelPage({
       </section>
 
       <section style={{ marginTop: 24 }}>
-        <h2 style={{ marginBottom: 10 }}>Calls (latest 200)</h2>
+        <h2 style={{ marginBottom: 10 }}>
+          Calls (latest 200)
+          <span style={{ fontSize: 12, color: "#666", marginLeft: 10 }}>
+            Showing calls filtered by channel_key={channelKey || "(none)"}
+          </span>
+        </h2>
+
         <div style={{ overflowX: "auto" }}>
           <table cellPadding={10} style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
                 <th>ID</th>
                 <th>Mint</th>
+                <th>Channel</th>
                 <th>Status</th>
                 <th>Outcome</th>
                 <th>PnL %</th>
@@ -121,16 +147,15 @@ export default async function ChannelPage({
               </tr>
             </thead>
             <tbody>
-              {calls.map((c) => (
+              {calls.map((c: any) => (
                 <tr key={c.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
                   <td>
-                    <a href={`/calls/${c.id}`} style={{ textDecoration: "underline" }}>
-                      {c.id}
-                    </a>
+                    <a href={`/calls/${c.id}`} style={{ textDecoration: "underline" }}>{c.id}</a>
                   </td>
                   <td style={{ fontFamily: "monospace" }}>
                     {c.mint.slice(0, 6)}…{c.mint.slice(-6)}
                   </td>
+                  <td>{c.channel_key}</td>
                   <td>{c.status}</td>
                   <td>{c.outcome ?? ""}</td>
                   <td>{c.pnl_pct != null ? `${Number(c.pnl_pct).toFixed(2)}%` : ""}</td>
@@ -140,7 +165,7 @@ export default async function ChannelPage({
 
               {calls.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ padding: 14, color: "#666" }}>
+                  <td colSpan={7} style={{ padding: 14, color: "#666" }}>
                     No calls for this channel yet.
                   </td>
                 </tr>
