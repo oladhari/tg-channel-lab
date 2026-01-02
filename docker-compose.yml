@@ -63,5 +63,14 @@ services:
       - ./backend/alembic/versions:/app/alembic/versions
     restart: unless-stopped
 
+  trader:
+    build: ./backend
+    command: ["python", "-m", "app.workers.run_trader_gmgn"]
+    env_file: .env
+    depends_on:
+      - db
+    volumes:
+      - ./sessions:/app/sessions
+
 volumes:
   pgdata:

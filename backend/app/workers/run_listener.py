@@ -1,3 +1,4 @@
+# backend/app/workers/run_listener.py
 from __future__ import annotations
 
 import os
@@ -48,7 +49,8 @@ async def main():
 
     db = SessionLocal()
     try:
-        channels = db.query(Channel).filter(Channel.enabled == True).all()  # noqa: E712
+        channels = db.query(Channel).filter(Channel.enabled == True).all()
+        live_map = {c.id: bool(c.live_enabled) for c in channels}
     finally:
         db.close()
 
@@ -76,6 +78,7 @@ async def main():
                     symbol=mint[:6],
                     status="RECORDING",
                     duration_sec=int(os.getenv("RECORD_DURATION_SEC", "1500")),
+                    live_sell_enabled=bool(live_map.get(channel_id, False)),
                 )
                 db.add(call)
                 db.commit()

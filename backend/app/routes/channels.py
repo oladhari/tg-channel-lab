@@ -64,3 +64,17 @@ def update_channel(channel_id: int, payload: ChannelUpdate):
         raise HTTPException(status_code=409, detail="telegram_username already exists")
     finally:
         db.close()
+
+@router.post("/{channel_id}/toggle-live", response_model=ChannelOut)
+def toggle_live(channel_id: int):
+    db = SessionLocal()
+    try:
+        ch = db.query(Channel).filter(Channel.id == channel_id).one_or_none()
+        if not ch:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        ch.live_enabled = not ch.live_enabled
+        db.commit()
+        db.refresh(ch)
+        return ch
+    finally:
+        db.close()
