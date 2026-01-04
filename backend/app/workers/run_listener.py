@@ -109,6 +109,8 @@ async def main():
                     status="RECORDING",
                     duration_sec=int(os.getenv("RECORD_DURATION_SEC", "1500")),
                     live_sell_enabled=bool(live_map.get(channel_id, False)),
+                    live_buy_enabled=bool(live_map.get(channel_id, False)),
+                    live_buy_status="NONE",
                 )
                 db2.add(call)
                 db2.commit()

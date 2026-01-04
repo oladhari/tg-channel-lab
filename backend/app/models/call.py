@@ -93,3 +93,16 @@ class Call(Base):
 
     live_sell_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     live_sell_error: Mapped[str | None] = mapped_column(String(300), default=None)
+    
+    # =========================
+    # LIVE BUY (GMGN)
+    # =========================
+    live_buy_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # snapshot at time of entry: whether live was enabled for this channel when call was created
+
+    live_buy_status: Mapped[str] = mapped_column(String(32), default="NONE")
+    # NONE | SENT | ERROR
+    live_buy_amount_sol: Mapped[float | None] = mapped_column(Float, default=None)
+
+    live_buy_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    live_buy_error: Mapped[str | None] = mapped_column(String(300), default=None)

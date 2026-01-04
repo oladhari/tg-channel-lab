@@ -71,6 +71,17 @@ services:
       - db
     volumes:
       - ./sessions:/app/sessions
+    restart: unless-stopped
+
+  buyer:
+    build: ./backend
+    command: ["python", "-m", "app.workers.run_buyer_gmgn"]
+    env_file: .env
+    depends_on:
+      - db
+    volumes:
+      - ./sessions:/app/sessions
+    restart: unless-stopped
 
 volumes:
   pgdata:
