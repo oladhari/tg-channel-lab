@@ -1,21 +1,17 @@
 // frontend/src/lib/api.ts
 
-function baseUrl(): string {
-  const publicBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
-  const backendBase = process.env.BACKEND_URL || "http://api:8000";
-
-  // Server-side (Node/SSR): MUST be absolute URL
-  if (typeof window === "undefined") {
-    return backendBase.replace(/\/$/, "");
-  }
-
-  // Client-side (browser): can be relative ("/api") or absolute
-  return publicBase.replace(/\/$/, "");
+function backendBase(): string {
+  // SSR (inside docker) -> talk directly to backend service
+  const b = process.env.BACKEND_URL || "http://api:8000";
+  return b.replace(/\/$/, "");
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const p = path.startsWith("/") ? path : `/${path}`;
-  const url = `${baseUrl()}${p}`;
+
+  // Browser -> go through Next proxy (/api)
+  // SSR -> direct to backend
+  const url = typeof window !== "undefined" ? `/api${p}` : `${backendBase()}${p}`;
 
   const res = await fetch(url, {
     ...init,
@@ -34,7 +30,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
       throw new Error(`HTTP ${res.status} ${res.statusText} — ${msg}`);
     }
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${res.statusText} — ${text}`);
+    throw new Error(`HTTP ${res.status} ${res.statusText} — ${text.slice(0, 250)}`);
   }
 
   return (await res.json()) as T;
@@ -67,19 +63,24 @@ export function getChannels() {
   return http<Channel[]>("/channels");
 }
 
-export function getPaperStats(params?: { strategy_key?: string; start_balance_sol?: number }) {
-  const strategy_key = params?.strategy_key ?? "tp35_sl20";
-  const start_balance_sol = params?.start_balance_sol ?? 1.0;
-
-  const qs = new URLSearchParams({
-    strategy_key,
-    start_balance_sol: String(start_balance_sol),
-  });
-
-  return http<PaperStat[]>(`/stats/paper?${qs.toString()}`);
+export function createChannel(body: {
+  key: string;
+  telegram_username: string;
+  enabled: boolean;
+  live_enabled: boolean;
+}) {
+  return http<Channel>("/channels", { method: "POST", body: JSON.stringify(body) });
 }
 
-// --- Calls Explorer types ---
+export function toggleChannelEnabled(id: number) {
+  return http<Channel>(`/channels/${id}/toggle`, { method: "POST" });
+}
+
+export function toggleChannelLive(id: number) {
+  return http<Channel>(`/channels/${id}/toggle-live`, { method: "POST" });
+}
+
+// --- Calls / stats ---
 export type CallRow = {
   id: number;
   channel_id: number;
@@ -92,7 +93,6 @@ export type CallRow = {
   entry_price_usd?: number | null;
   ignore_reason?: string | null;
 
-  // Joined strategy result (optional)
   strategy_key?: string | null;
   outcome?: string | null;
   pnl_pct?: number | null;
@@ -124,10 +124,27 @@ export type CallDetail = {
   }>;
 };
 
-export type PricePoint = {
-  t_sec: number;
-  price_usd: number;
-};
+export type PricePoint = { t_sec: number; price_usd: number };
+
+export function getPaperStats(params?: {
+  strategy_key?: string;
+  start_balance_sol?: number;
+  entry_sol?: number;
+  channel_key?: string;
+}) {
+  const strategy_key = params?.strategy_key ?? "tp35_sl20";
+  const start_balance_sol = params?.start_balance_sol ?? 1.0;
+
+  const qs = new URLSearchParams({
+    strategy_key,
+    start_balance_sol: String(start_balance_sol),
+  });
+
+  if (params?.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
+  if (params?.channel_key) qs.set("channel_key", params.channel_key);
+
+  return http<PaperStat[]>(`/stats/paper?${qs.toString()}`);
+}
 
 export function getCalls(params?: {
   limit?: number;
@@ -152,4 +169,22 @@ export function getCall(id: number) {
 
 export function getCallPrices(id: number) {
   return http<PricePoint[]>(`/calls/${id}/prices`);
+}
+
+// --- Live ---
+export type LiveConfig = {
+  gmgn_target_set: boolean;
+  gmgn_target: string | null;
+  gmgn_sell_percent: string;
+  live_strategy_key: string;
+};
+
+export function getLiveConfig() {
+  return http<LiveConfig>(`/live/config`);
+}
+
+export function getLiveQueue(params?: { limit?: number }) {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params?.limit ?? 200));
+  return http<any[]>(`/live/queue?${qs.toString()}`);
 }

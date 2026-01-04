@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { normalizeTelegramUsername } from "../lib/telegram";
+import { createChannel } from "../lib/api";
 
 export default function AddChannelForm() {
   const router = useRouter();
@@ -25,28 +26,13 @@ export default function AddChannelForm() {
 
     setLoading(true);
     try {
-      const res = await fetch("/api/channels", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          key: normalized,
-          telegram_username: normalized,
-          enabled: true, // recording ON by default ✅
-          live_enabled: liveEnabled, // user choice ✅
-        }),
+      // ✅ Keep add-channel working via our unified /api/channels route
+      await createChannel({
+        key: normalized,
+        telegram_username: normalized,
+        enabled: true, // recording ON by default ✅
+        live_enabled: liveEnabled, // user choice ✅
       });
-
-      if (!res.ok) {
-        const ct = res.headers.get("content-type") || "";
-        if (ct.includes("application/json")) {
-          const j = await res.json().catch(() => null);
-          const msg = j?.detail || j?.message || JSON.stringify(j);
-          throw new Error(msg || `Request failed (${res.status})`);
-        } else {
-          const text = await res.text();
-          throw new Error(`Request failed (${res.status}). ${text.slice(0, 200)}...`);
-        }
-      }
 
       setInput("");
       setLiveEnabled(false);
@@ -78,7 +64,11 @@ export default function AddChannelForm() {
       )}
 
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <input type="checkbox" checked={liveEnabled} onChange={(e) => setLiveEnabled(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={liveEnabled}
+          onChange={(e) => setLiveEnabled(e.target.checked)}
+        />
         Live enabled (future live trading / alerts)
       </label>
 

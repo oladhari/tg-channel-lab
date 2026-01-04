@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import (
     Integer,
     String,
+    Boolean,
     DateTime,
     ForeignKey,
     func,
@@ -79,3 +80,29 @@ class Call(Base):
     channel = relationship("Channel", back_populates="calls")
     prices = relationship("PricePoint", back_populates="call", cascade="all, delete-orphan")
     display_result = relationship("StrategyResult", back_populates="call", uselist=False, cascade="all, delete-orphan")
+
+
+    live_sell_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  
+    # snapshot at time of entry: whether live was enabled for this channel when call was created
+
+    live_sell_status: Mapped[str] = mapped_column(String(32), default="NONE")
+    # NONE | SENT | DONE | ERROR
+
+    live_sell_reason: Mapped[str | None] = mapped_column(String(16), default=None)
+    # TP | SL | TIME
+
+    live_sell_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    live_sell_error: Mapped[str | None] = mapped_column(String(300), default=None)
+    
+    # =========================
+    # LIVE BUY (GMGN)
+    # =========================
+    live_buy_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # snapshot at time of entry: whether live was enabled for this channel when call was created
+
+    live_buy_status: Mapped[str] = mapped_column(String(32), default="NONE")
+    # NONE | SENT | ERROR
+    live_buy_amount_sol: Mapped[float | None] = mapped_column(Float, default=None)
+
+    live_buy_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    live_buy_error: Mapped[str | None] = mapped_column(String(300), default=None)

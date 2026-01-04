@@ -1,3 +1,4 @@
+# backend/app/models/price_point.py
 from __future__ import annotations
 
 from datetime import datetime

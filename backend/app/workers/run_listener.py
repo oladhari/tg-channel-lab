@@ -1,3 +1,4 @@
+# backend/app/workers/run_listener.py
 from __future__ import annotations
 
 import os
@@ -7,6 +8,9 @@ from datetime import datetime
 from pathlib import Path
 
 from telethon import TelegramClient, events
+from telethon.errors import UsernameNotOccupiedError, UsernameInvalidError
+from telethon.errors.rpcerrorlist import RPCError
+
 from sqlalchemy.exc import IntegrityError
 
 from app.db.session import SessionLocal
@@ -26,8 +30,6 @@ def extract_first_solana_ca(text: str) -> str | None:
 TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"])
 TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
 
-# Prefer explicit TELEGRAM_SESSION_FILE if you ever want to override it.
-# Otherwise build from TELEGRAM_SESSION / TELEGRAM_SESSION_NAME and store inside /app/sessions (mounted volume).
 SESSION_DIR = Path(os.environ.get("TELEGRAM_SESSION_DIR", "/app/sessions"))
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -46,9 +48,11 @@ client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH)
 async def main():
     print(f"[LISTENER] running | session={SESSION_PATH}")
 
+    # Load enabled channels + live map
     db = SessionLocal()
     try:
-        channels = db.query(Channel).filter(Channel.enabled == True).all()  # noqa: E712
+        channels = db.query(Channel).filter(Channel.enabled == True).all()
+        live_map = {c.id: bool(c.live_enabled) for c in channels}
     finally:
         db.close()
 
@@ -58,9 +62,37 @@ async def main():
         await client.run_until_disconnected()
         return
 
+    await client.start()
+
+    ok_count = 0
+    skip_count = 0
+
     for ch in channels:
-        username = ch.telegram_username
+        username = (ch.telegram_username or "").strip().lstrip("@")
+        if not username:
+            print(f"[LISTENER] skip empty username (channel_id={ch.id})")
+            skip_count += 1
+            continue
+
+        # Resolve entity once; if invalid, skip and do not crash
+        try:
+            entity = await client.get_input_entity(username)
+        except (ValueError, UsernameNotOccupiedError, UsernameInvalidError) as e:
+            print(f"[LISTENER] SKIP invalid username=@{username} (channel_id={ch.id}) -> {e}")
+            skip_count += 1
+            continue
+        except RPCError as e:
+            # Any other Telegram RPC errors (flood, etc.)
+            print(f"[LISTENER] SKIP rpc error username=@{username} (channel_id={ch.id}) -> {e}")
+            skip_count += 1
+            continue
+        except Exception as e:
+            print(f"[LISTENER] SKIP unexpected error username=@{username} (channel_id={ch.id}) -> {e}")
+            skip_count += 1
+            continue
+
         print(f"[LISTENER] subscribe @{username} (channel_id={ch.id})")
+        ok_count += 1
 
         async def handler(event, channel_id=ch.id):
             msg = (event.message.message or "").strip()
@@ -68,7 +100,7 @@ async def main():
             if not mint:
                 return
 
-            db = SessionLocal()
+            db2 = SessionLocal()
             try:
                 call = Call(
                     channel_id=channel_id,
@@ -76,22 +108,26 @@ async def main():
                     symbol=mint[:6],
                     status="RECORDING",
                     duration_sec=int(os.getenv("RECORD_DURATION_SEC", "1500")),
+                    live_sell_enabled=bool(live_map.get(channel_id, False)),
+                    live_buy_enabled=bool(live_map.get(channel_id, False)),
+                    live_buy_status="NONE",
                 )
-                db.add(call)
-                db.commit()
+                db2.add(call)
+                db2.commit()
                 print(
                     f"[CALL] channel_id={channel_id} mint={mint[:8]}... at "
                     f"{datetime.now().isoformat(timespec='seconds')}"
                 )
             except IntegrityError:
-                db.rollback()
+                db2.rollback()
                 # already seen for that channel → ignore
             finally:
-                db.close()
+                db2.close()
 
-        client.add_event_handler(handler, events.NewMessage(chats=username))
+        # IMPORTANT: use resolved entity (not the string username)
+        client.add_event_handler(handler, events.NewMessage(chats=entity))
 
-    await client.start()
+    print(f"[LISTENER] ready | subscribed={ok_count} skipped={skip_count}")
     await client.run_until_disconnected()
 
 

@@ -1,3 +1,4 @@
+# backend/app/models/seen_mint.py
 from __future__ import annotations
 from sqlalchemy import Integer, String, DateTime, func, UniqueConstraint, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column

@@ -26,32 +26,62 @@ services:
     environment:
       NEXT_PUBLIC_API_BASE_URL: /api
       BACKEND_URL: http://api:8000
+      # optional but helps file watching inside Docker on some VPS
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
     depends_on:
       - api
     ports:
       - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
     restart: unless-stopped
 
   listener:
     build: ./backend
     env_file: .env
-    command: bash -lc "mkdir -p /app/sessions && python -m app.workers.run_listener"
+    command: bash -lc "alembic upgrade head && mkdir -p /app/sessions && python -m app.workers.run_listener"
     depends_on:
       - db
+      - api
     volumes:
       - ./sessions:/app/sessions
+      - ./backend/alembic/versions:/app/alembic/versions
     restart: unless-stopped
 
   recorder:
     build: ./backend
     env_file: .env
-    command: bash -lc "mkdir -p /app/sessions && python -m app.workers.run_recorder"
+    command: bash -lc "alembic upgrade head && mkdir -p /app/sessions && python -m app.workers.run_recorder"
+    depends_on:
+      - db
+      - api
+    volumes:
+      - ./sessions:/app/sessions
+      - ./backend/alembic/versions:/app/alembic/versions
+    restart: unless-stopped
+
+  trader:
+    build: ./backend
+    command: ["python", "-m", "app.workers.run_trader_gmgn"]
+    env_file: .env
     depends_on:
       - db
     volumes:
       - ./sessions:/app/sessions
     restart: unless-stopped
 
+  buyer:
+    build: ./backend
+    command: ["python", "-m", "app.workers.run_buyer_gmgn"]
+    env_file: .env
+    depends_on:
+      - db
+    volumes:
+      - ./sessions:/app/sessions
+    restart: unless-stopped
 
 volumes:
   pgdata:
