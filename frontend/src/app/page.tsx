@@ -1,3 +1,4 @@
+// frontend/src/app/page.tsx
 import AddChannelForm from "./AddChannelForm";
 import PaperControls from "./PaperControls";
 import ChannelRowActions from "./ChannelRowActions";

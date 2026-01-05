@@ -14,6 +14,10 @@ function makeStrategyKey(tp: number, sl: number) {
   return `tp${tp}_sl${sl}`;
 }
 
+function dexscreenerSolanaUrl(mint: string) {
+  return `https://dexscreener.com/solana/${mint}`;
+}
+
 type SearchParams = { [k: string]: string | string[] | undefined };
 
 export default async function ChannelPage(props: {
@@ -35,7 +39,6 @@ export default async function ChannelPage(props: {
 
   const [channels, statsArr, calls] = await Promise.all([
     getChannels(),
-    // backend supports channel_key => ask only for this channel
     channelKey
       ? getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry, channel_key: channelKey })
       : getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry }),
@@ -147,21 +150,40 @@ export default async function ChannelPage(props: {
               </tr>
             </thead>
             <tbody>
-              {calls.map((c: any) => (
-                <tr key={c.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                  <td>
-                    <a href={`/calls/${c.id}`} style={{ textDecoration: "underline" }}>{c.id}</a>
-                  </td>
-                  <td style={{ fontFamily: "monospace" }}>
-                    {c.mint.slice(0, 6)}…{c.mint.slice(-6)}
-                  </td>
-                  <td>{c.channel_key}</td>
-                  <td>{c.status}</td>
-                  <td>{c.outcome ?? ""}</td>
-                  <td>{c.pnl_pct != null ? `${Number(c.pnl_pct).toFixed(2)}%` : ""}</td>
-                  <td>{new Date(c.started_at).toLocaleString()}</td>
-                </tr>
-              ))}
+              {calls.map((c: any) => {
+                const mint: string = c.mint || "";
+                const dexUrl = mint ? dexscreenerSolanaUrl(mint) : null;
+
+                return (
+                  <tr key={c.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                    <td>
+                      <a href={`/calls/${c.id}`} style={{ textDecoration: "underline" }}>{c.id}</a>
+                    </td>
+
+                    <td style={{ fontFamily: "monospace" }}>
+                      {dexUrl ? (
+                        <a
+                          href={dexUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open in Dexscreener"
+                          style={{ textDecoration: "underline" }}
+                        >
+                          {mint.slice(0, 6)}…{mint.slice(-6)}
+                        </a>
+                      ) : (
+                        <span>{mint}</span>
+                      )}
+                    </td>
+
+                    <td>{c.channel_key}</td>
+                    <td>{c.status}</td>
+                    <td>{c.outcome ?? ""}</td>
+                    <td>{c.pnl_pct != null ? `${Number(c.pnl_pct).toFixed(2)}%` : ""}</td>
+                    <td>{new Date(c.started_at).toLocaleString()}</td>
+                  </tr>
+                );
+              })}
 
               {calls.length === 0 && (
                 <tr>

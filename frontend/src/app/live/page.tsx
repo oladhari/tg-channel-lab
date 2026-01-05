@@ -26,24 +26,28 @@ export default async function LivePage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r: any) => (
-              <tr key={r.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                <td>{r.id}</td>
-                <td>
-                  <b>{r.channel_key}</b> <span style={{ color: "#666" }}>@{r.telegram_username}</span>
-                </td>
-                <td style={{ fontFamily: "monospace" }}>{r.mint?.slice(0, 10)}...</td>
-                <td>{r.status}</td>
-                <td>{r.live_sell_status}</td>
-                <td>{r.live_sell_reason || r.outcome || ""}</td>
-                <td style={{ color: r.live_sell_error ? "crimson" : "#666" }}>
-                  {r.live_sell_error ? String(r.live_sell_error).slice(0, 60) : ""}
-                </td>
-                <td>{String(r.started_at).slice(0, 19)}</td>
-              </tr>
-            ))}
+            {Array.isArray(rows) &&
+              rows.map((r: any) => (
+                <tr key={r.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                  <td>{r.id}</td>
+                  <td>
+                    <b>{r.channel_key}</b>{" "}
+                    <span style={{ color: "#666" }}>@{r.telegram_username}</span>
+                  </td>
+                  <td style={{ fontFamily: "monospace" }}>
+                    {r.mint ? `${String(r.mint).slice(0, 10)}...` : ""}
+                  </td>
+                  <td>{r.status}</td>
+                  <td>{r.live_sell_status}</td>
+                  <td>{r.live_sell_reason || r.outcome || ""}</td>
+                  <td style={{ color: r.live_sell_error ? "crimson" : "#666" }}>
+                    {r.live_sell_error ? String(r.live_sell_error).slice(0, 60) : ""}
+                  </td>
+                  <td>{r.started_at ? String(r.started_at).slice(0, 19) : ""}</td>
+                </tr>
+              ))}
 
-            {rows.length === 0 && (
+            {(!rows || rows.length === 0) && (
               <tr>
                 <td colSpan={8} style={{ padding: 14, color: "#666" }}>
                   Empty.
