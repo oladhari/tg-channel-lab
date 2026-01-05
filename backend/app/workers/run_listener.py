@@ -33,16 +33,14 @@ TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
 SESSION_DIR = Path(os.environ.get("TELEGRAM_SESSION_DIR", "/app/sessions"))
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
-SESSION_NAME = (
-    os.environ.get("TELEGRAM_SESSION")
-    or os.environ.get("TELEGRAM_SESSION_NAME")
-    or "tg_lab_session"
-)
+LISTENER_SESSION_NAME = os.environ.get("TELEGRAM_SESSION_LISTENER", "tg_lab_session_listener").strip()
+if not LISTENER_SESSION_NAME:
+    raise SystemExit("[LISTENER] TELEGRAM_SESSION_LISTENER is empty")
 
-DEFAULT_SESSION_FILE = str(SESSION_DIR / f"{SESSION_NAME}.session")
-SESSION_PATH = os.environ.get("TELEGRAM_SESSION_FILE", DEFAULT_SESSION_FILE)
+SESSION_PATH = str(SESSION_DIR / f"{LISTENER_SESSION_NAME}.session")
 
 client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH)
+
 
 
 async def main():

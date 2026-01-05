@@ -30,20 +30,14 @@ TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
 SESSION_DIR = Path(os.environ.get("TELEGRAM_SESSION_DIR", "/app/sessions"))
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
-# Listener uses TELEGRAM_SESSION (existing)
-# Trader uses TELEGRAM_SESSION_TRADER (new) -> separate file avoids sqlite "database is locked"
-LISTENER_SESSION_NAME = (
-    os.environ.get("TELEGRAM_SESSION")
-    or os.environ.get("TELEGRAM_SESSION_NAME")
-    or "tg_lab_session"
-)
+TRADER_SESSION_NAME = os.environ.get("TELEGRAM_SESSION_TRADER", "tg_lab_session_trader").strip()
+if not TRADER_SESSION_NAME:
+    raise SystemExit("[TRADER] TELEGRAM_SESSION_TRADER is empty")
 
-TRADER_SESSION_NAME = os.environ.get("TELEGRAM_SESSION_TRADER", f"{LISTENER_SESSION_NAME}_trader")
-
-DEFAULT_SESSION_FILE = str(SESSION_DIR / f"{TRADER_SESSION_NAME}.session")
-SESSION_PATH = os.environ.get("TELEGRAM_SESSION_FILE_TRADER", DEFAULT_SESSION_FILE)
+SESSION_PATH = str(SESSION_DIR / f"{TRADER_SESSION_NAME}.session")
 
 client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH)
+
 
 _last_sent: dict[int, float] = {}  # call_id -> ts
 
