@@ -21,8 +21,8 @@ function dexscreenerSolanaUrl(mint: string) {
 type SearchParams = { [k: string]: string | string[] | undefined };
 
 export default async function ChannelPage(props: {
-  params: any; // can be object OR Promise in some Next versions
-  searchParams?: any; // can be object OR Promise in some Next versions
+  params: any;
+  searchParams?: any;
 }) {
   const params = await Promise.resolve(props.params);
   const searchParams: SearchParams = await Promise.resolve(props.searchParams ?? {});
@@ -49,7 +49,6 @@ export default async function ChannelPage(props: {
 
   const ch = channelKey ? channels.find((c) => c.key === channelKey) || null : null;
 
-  // PaperStatsOut uses "key" (channel key) from backend, NOT "channel_key"
   const stat =
     channelKey
       ? (statsArr.find((s: any) => s.key === channelKey) ?? statsArr[0] ?? null)
@@ -151,7 +150,7 @@ export default async function ChannelPage(props: {
             </thead>
             <tbody>
               {calls.map((c: any) => {
-                const mint: string = c.mint || "";
+                const mint: string = typeof c.mint === "string" ? c.mint : "";
                 const dexUrl = mint ? dexscreenerSolanaUrl(mint) : null;
 
                 return (
@@ -166,13 +165,13 @@ export default async function ChannelPage(props: {
                           href={dexUrl}
                           target="_blank"
                           rel="noreferrer"
-                          title="Open in Dexscreener"
                           style={{ textDecoration: "underline" }}
+                          title="Open Dexscreener"
                         >
                           {mint.slice(0, 6)}…{mint.slice(-6)}
                         </a>
                       ) : (
-                        <span>{mint}</span>
+                        <span style={{ color: "#999" }}>(no mint)</span>
                       )}
                     </td>
 
@@ -199,3 +198,4 @@ export default async function ChannelPage(props: {
     </main>
   );
 }
+

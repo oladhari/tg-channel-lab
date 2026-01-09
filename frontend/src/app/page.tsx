@@ -14,15 +14,17 @@ function makeStrategyKey(tp: number, sl: number) {
   return `tp${tp}_sl${sl}`;
 }
 
-export default async function Home({
-  searchParams,
-}: {
-  searchParams?: { [key: string]: string | string[] | undefined };
+type SearchParams = { [key: string]: string | string[] | undefined };
+
+export default async function Home(props: {
+  searchParams?: any; // can be object OR Promise in some Next versions
 }) {
-  const tp = toNum(typeof searchParams?.tp === "string" ? searchParams.tp : undefined, 35);
-  const sl = toNum(typeof searchParams?.sl === "string" ? searchParams.sl : undefined, 20);
-  const start = toNum(typeof searchParams?.start === "string" ? searchParams.start : undefined, 1.0);
-  const entry = toNum(typeof searchParams?.entry === "string" ? searchParams.entry : undefined, 0.1);
+  const searchParams: SearchParams = await Promise.resolve(props.searchParams ?? {});
+
+  const tp = toNum(typeof searchParams.tp === "string" ? searchParams.tp : undefined, 35);
+  const sl = toNum(typeof searchParams.sl === "string" ? searchParams.sl : undefined, 20);
+  const start = toNum(typeof searchParams.start === "string" ? searchParams.start : undefined, 1.0);
+  const entry = toNum(typeof searchParams.entry === "string" ? searchParams.entry : undefined, 0.1);
 
   const strategy_key = makeStrategyKey(tp, sl);
 
@@ -62,6 +64,7 @@ export default async function Home({
       <AddChannelForm />
       <PaperControls />
 
+      {/* rest unchanged */}
       <section style={{ marginTop: 28 }}>
         <h2 style={{ marginBottom: 10 }}>Channels</h2>
         <div style={{ overflowX: "auto" }}>

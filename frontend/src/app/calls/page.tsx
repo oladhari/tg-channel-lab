@@ -5,6 +5,10 @@ function shortMint(m: string) {
   return `${m.slice(0, 6)}…${m.slice(-6)}`;
 }
 
+function dexscreenerUrl(mint: string) {
+  return `https://dexscreener.com/solana/${mint}`;
+}
+
 export default async function CallsPage() {
   const rows = await getCalls({ limit: 200, strategy_key: "tp35_sl20" });
 
@@ -37,12 +41,25 @@ export default async function CallsPage() {
               {rows.map((r) => (
                 <tr key={r.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
                   <td>{r.channel_key}</td>
-                  <td>
-                    <a href={`/calls/${r.id}`} style={{ textDecoration: "underline" }}>
+
+                  <td style={{ fontFamily: "monospace" }}>
+                    <a href={`/calls/${r.id}`} style={{ textDecoration: "underline", marginRight: 10 }}>
                       {shortMint(r.mint)}
                     </a>
+
+                    <a
+                      href={dexscreenerUrl(r.mint)}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ textDecoration: "underline", color: "#444" }}
+                      title="Open Dexscreener"
+                    >
+                      Dex
+                    </a>
+
                     {r.symbol ? <span style={{ marginLeft: 8, color: "#666" }}>({r.symbol})</span> : null}
                   </td>
+
                   <td>{r.status}</td>
                   <td>{r.entry_price_usd == null ? "" : Number(r.entry_price_usd).toFixed(8)}</td>
                   <td>{r.outcome ?? ""}</td>
