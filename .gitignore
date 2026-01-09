@@ -19,6 +19,7 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+venv/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
@@ -58,3 +59,7 @@ frontend/.env.test.local
 
 # --- Docker overrides / local-only ---
 docker-compose.override.yml
+
+# --- project local scratch / generated ---
+typescript/
+*.tsbuildinfo

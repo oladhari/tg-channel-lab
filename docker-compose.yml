@@ -21,18 +21,37 @@ services:
       - ./backend/alembic/versions:/app/alembic/versions
     restart: unless-stopped
 
+  # ✅ PROD frontend (stable)
   frontend:
     build: ./frontend
     environment:
       NEXT_PUBLIC_API_BASE_URL: /api
       BACKEND_URL: http://api:8000
-      # optional but helps file watching inside Docker on some VPS
+      NEXT_TELEMETRY_DISABLED: "1"
+      DISABLE_ESLINT_PLUGIN: "true"
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  # 🛠 DEV frontend (only when you need hot reload)
+  # Run with: docker compose --profile dev up -d frontend-dev
+  frontend-dev:
+    profiles: ["dev"]
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: /api
+      BACKEND_URL: http://api:8000
+      NEXT_TELEMETRY_DISABLED: "1"
+      DISABLE_ESLINT_PLUGIN: "true"
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
     depends_on:
       - api
     ports:
       - "3000:3000"
+    command: ["npm", "run", "dev", "--", "-p", "3000", "-H", "0.0.0.0"]
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -65,8 +84,8 @@ services:
 
   trader:
     build: ./backend
-    command: ["python", "-m", "app.workers.run_trader_gmgn"]
     env_file: .env
+    command: ["python", "-m", "app.workers.run_trader_gmgn"]
     depends_on:
       - db
     volumes:
@@ -75,8 +94,8 @@ services:
 
   buyer:
     build: ./backend
-    command: ["python", "-m", "app.workers.run_buyer_gmgn"]
     env_file: .env
+    command: ["python", "-m", "app.workers.run_buyer_gmgn"]
     depends_on:
       - db
     volumes:

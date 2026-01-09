@@ -26,20 +26,18 @@ TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"])
 TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
 
 # separate sqlite session for buyer
+
 SESSION_DIR = Path(os.environ.get("TELEGRAM_SESSION_DIR", "/app/sessions"))
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
-LISTENER_SESSION_NAME = (
-    os.environ.get("TELEGRAM_SESSION")
-    or os.environ.get("TELEGRAM_SESSION_NAME")
-    or "tg_lab_session"
-)
+BUYER_SESSION_NAME = os.environ.get("TELEGRAM_SESSION_BUYER", "tg_lab_session_buyer").strip()
+if not BUYER_SESSION_NAME:
+    raise SystemExit("[BUYER] TELEGRAM_SESSION_BUYER is empty")
 
-BUYER_SESSION_NAME = os.environ.get("TELEGRAM_SESSION_BUYER", f"{LISTENER_SESSION_NAME}_buyer")
-DEFAULT_SESSION_FILE = str(SESSION_DIR / f"{BUYER_SESSION_NAME}.session")
-SESSION_PATH = os.environ.get("TELEGRAM_SESSION_FILE_BUYER", DEFAULT_SESSION_FILE)
+SESSION_PATH = str(SESSION_DIR / f"{BUYER_SESSION_NAME}.session")
 
 client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH)
+
 
 _last_sent: dict[int, float] = {}  # call_id -> ts
 

@@ -33,7 +33,10 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`HTTP ${res.status} ${res.statusText} — ${text.slice(0, 250)}`);
   }
 
-  return (await res.json()) as T;
+  // Some endpoints might return empty body; handle safely
+  const text = await res.text();
+  if (!text) return undefined as unknown as T;
+  return JSON.parse(text) as T;
 }
 
 export type Channel = {
@@ -76,6 +79,7 @@ export function toggleChannelEnabled(id: number) {
   return http<Channel>(`/channels/${id}/toggle`, { method: "POST" });
 }
 
+// ✅ This is the ONLY correct endpoint for Live toggling
 export function toggleChannelLive(id: number) {
   return http<Channel>(`/channels/${id}/toggle-live`, { method: "POST" });
 }
@@ -171,7 +175,7 @@ export function getCallPrices(id: number) {
   return http<PricePoint[]>(`/calls/${id}/prices`);
 }
 
-// --- Live ---
+// --- Live (read-only endpoints) ---
 export type LiveConfig = {
   gmgn_target_set: boolean;
   gmgn_target: string | null;

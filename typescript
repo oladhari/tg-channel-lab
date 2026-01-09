@@ -1,0 +1,6 @@
+Script started on 2026-01-04 23:38:23+00:00 [COMMAND="docker compose run --rm -it buyer python - <<'PY' from telethon.sync import TelegramClient import os  api_id = int(os.environ['TELEGRAM_API_ID']) api_hash = os.environ['TELEGRAM_API_HASH'] session = '/app/sessions/tg_lab_session_buyer.session'  with TelegramClient(session, api_id, api_hash) as client:     print('Logged in OK') PY" TERM="tmux-256color" TTY="/dev/pts/0" COLUMNS="184" LINES="44"]
+[1A[1B[0G[?25l[+] Creating 1/0
+ [32m✔[0m Container tg-channel-lab-db-1  [32mRunning[0m                                                                                                                                          [34m0.0s [0m
+[?25hthe input device is not a TTY
+
+Script done on 2026-01-04 23:38:24+00:00 [COMMAND_EXIT_CODE="1"]

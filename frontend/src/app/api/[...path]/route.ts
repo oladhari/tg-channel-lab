@@ -26,6 +26,10 @@ async function proxy(req: NextRequest, ctx: Ctx) {
   const auth = req.headers.get("authorization");
   if (auth) headers.set("authorization", auth);
 
+  // forward cookies if present (future-proof)
+  const cookie = req.headers.get("cookie");
+  if (cookie) headers.set("cookie", cookie);
+
   const init: RequestInit = {
     method: req.method,
     headers,
