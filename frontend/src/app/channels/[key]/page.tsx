@@ -62,6 +62,7 @@ export default async function ChannelPage(props: {
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
       <p style={{ marginTop: 0 }}>
         <a href="/" style={{ textDecoration: "underline" }}>← Back to dashboard</a>{" "}
+        <span style={{ margin: "0 8px", color: "#bbb" }}>|</span>
         <a href={`/channels/${channelKey}/simulation`} style={{ textDecoration: "underline" }}>
           Open Simulation
         </a>

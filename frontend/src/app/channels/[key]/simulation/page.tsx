@@ -1,14 +1,17 @@
 // frontend/src/app/channels/[key]/simulation/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useState } from "react";
 import { getGridSim, type GridSim } from "../../../../lib/api";
 
 const DEFAULT_TP = "35,40,45,50,55,60,65";
 const DEFAULT_SL = "20,25,30,35,40,45,50";
 
-export default function ChannelSimulationPage(props: { params: { key: string } }) {
-  const channelKey = props.params?.key ?? "";
+export default function ChannelSimulationPage() {
+  const params = useParams<{ key: string }>();
+  const channelKey = typeof params?.key === "string" ? params.key : "";
 
   const [tpValues, setTpValues] = useState(DEFAULT_TP);
   const [slValues, setSlValues] = useState(DEFAULT_SL);
@@ -20,6 +23,8 @@ export default function ChannelSimulationPage(props: { params: { key: string } }
   const [data, setData] = useState<GridSim | null>(null);
 
   async function run() {
+    if (!channelKey) return;
+
     setLoading(true);
     setErr(null);
     try {
@@ -39,12 +44,26 @@ export default function ChannelSimulationPage(props: { params: { key: string } }
     }
   }
 
+  if (!channelKey) {
+    return (
+      <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
+        <p style={{ marginTop: 0 }}>
+          <Link href="/channels" style={{ textDecoration: "underline" }}>
+            ← Back
+          </Link>
+        </p>
+        <h1 style={{ marginBottom: 6 }}>Simulation</h1>
+        <p style={{ color: "crimson" }}>Missing channel key in URL.</p>
+      </main>
+    );
+  }
+
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
       <p style={{ marginTop: 0 }}>
-        <a href={`/channels/${channelKey}`} style={{ textDecoration: "underline" }}>
+        <Link href={`/channels/${channelKey}`} style={{ textDecoration: "underline" }}>
           ← Back to channel
-        </a>
+        </Link>
       </p>
 
       <h1 style={{ marginBottom: 6 }}>Simulation: {channelKey}</h1>
@@ -68,17 +87,27 @@ export default function ChannelSimulationPage(props: { params: { key: string } }
 
           <label style={{ display: "grid", gap: 6 }}>
             <span style={{ fontSize: 12, color: "#555" }}>Start balance (SOL)</span>
-            <input type="number" step="0.01" value={start} onChange={(e) => setStart(Number(e.target.value))} />
+            <input
+              type="number"
+              step="0.01"
+              value={start}
+              onChange={(e) => setStart(Number(e.target.value))}
+            />
           </label>
 
           <label style={{ display: "grid", gap: 6 }}>
             <span style={{ fontSize: 12, color: "#555" }}>Entry size (SOL)</span>
-            <input type="number" step="0.01" value={entry} onChange={(e) => setEntry(Number(e.target.value))} />
+            <input
+              type="number"
+              step="0.01"
+              value={entry}
+              onChange={(e) => setEntry(Number(e.target.value))}
+            />
           </label>
         </div>
 
         <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-          <button onClick={run} disabled={loading || !channelKey}>
+          <button onClick={run} disabled={loading}>
             {loading ? "Running..." : "Run simulation"}
           </button>
 
@@ -91,6 +120,11 @@ export default function ChannelSimulationPage(props: { params: { key: string } }
           >
             Reset defaults
           </button>
+        </div>
+
+        {/* Optional debug: remove later */}
+        <div style={{ marginTop: 10, fontSize: 12, color: "#777" }}>
+          channel_key: <b>{channelKey}</b>
         </div>
 
         {err && (
