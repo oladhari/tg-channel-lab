@@ -192,3 +192,42 @@ export function getLiveQueue(params?: { limit?: number }) {
   qs.set("limit", String(params?.limit ?? 200));
   return http<any[]>(`/live/queue?${qs.toString()}`);
 }
+
+export type GridCell = {
+  tp_pct: number;
+  sl_pct: number;
+  n_trades: number;
+  tp: number;
+  sl: number;
+  time: number;
+  win_rate_tp_pct: number;
+  avg_pnl_pct: number;
+  start_balance_sol: number;
+  end_balance_sol: number;
+};
+
+export type GridSim = {
+  channel_key: string;
+  start_balance_sol: number;
+  entry_sol: number;
+  tp_values: number[];
+  sl_values: number[];
+  results: GridCell[];
+};
+
+export function getGridSim(params: {
+  channel_key: string;
+  tp_values?: string; // csv string
+  sl_values?: string; // csv string
+  start_balance_sol?: number;
+  entry_sol?: number;
+}) {
+  const qs = new URLSearchParams();
+  qs.set("channel_key", params.channel_key);
+  qs.set("tp_values", params.tp_values ?? "35,40,45,50,55,60,65");
+  qs.set("sl_values", params.sl_values ?? "20,25,30,35,40,45,50");
+  qs.set("start_balance_sol", String(params.start_balance_sol ?? 1.0));
+  if (params.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
+
+  return http<GridSim>(`/stats/grid?${qs.toString()}`);
+}
