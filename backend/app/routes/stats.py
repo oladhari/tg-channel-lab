@@ -7,15 +7,19 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.settings import settings
 from app.db.session import SessionLocal
-from app.models import Channel, Call, StrategyResult, PricePoint
+from app.models import Channel, Call, StrategyResult
 from app.schemas.stats import PaperStatsOut, GridSimOut, GridCellOut
 
 router = APIRouter(prefix="/stats", tags=["stats"])
+
 
 def _round2(x: float) -> float:
     return float(round(x, 2))
 
 
+# =========================================================
+# PAPER STATS (reads existing StrategyResult rows)
+# =========================================================
 @router.get("/paper", response_model=list[PaperStatsOut])
 def paper_stats(
     strategy_key: str = Query(default="tp35_sl20"),
@@ -37,7 +41,9 @@ def paper_stats(
     Where:
       position_sol = min(entry_sol, current_balance)  # cannot trade more than you have
     """
-    trade_entry_sol = float(entry_sol) if entry_sol is not None else float(getattr(settings, "PAPER_ENTRY_SOL", 0.1))
+    trade_entry_sol = float(entry_sol) if entry_sol is not None else float(
+        getattr(settings, "PAPER_ENTRY_SOL", 0.1)
+    )
 
     db: Session = SessionLocal()
     try:
@@ -128,11 +134,9 @@ def paper_stats(
         db.close()
 
 
-
-
-
-
-
+# =========================================================
+# GRID SIMULATION (recomputes from price_points)
+# =========================================================
 def _parse_csv_floats(s: str) -> list[float]:
     vals: list[float] = []
     for part in (s or "").split(","):
@@ -144,8 +148,7 @@ def _parse_csv_floats(s: str) -> list[float]:
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid number in list: '{part}'")
     # de-dupe + stable sort
-    vals = sorted(set(vals))
-    return vals
+    return sorted(set(vals))
 
 
 def _simulate_one_call(call: Call, tp_pct: float, sl_pct: float) -> tuple[str, float]:
@@ -154,11 +157,11 @@ def _simulate_one_call(call: Call, tp_pct: float, sl_pct: float) -> tuple[str, f
     outcome: TP | SL | TIME
     pnl_pct: +tp_pct for TP, -sl_pct for SL, else TIME uses last_price vs entry
     """
-    # Determine entry
     entry = call.entry_price_usd
     points = list(call.prices or [])
     points.sort(key=lambda p: p.t_sec)
 
+    # If entry is missing, fall back to first price point
     if entry is None:
         if not points:
             return ("TIME", 0.0)
@@ -197,8 +200,14 @@ def grid_simulation(
     """
     Grid simulation per channel, using raw price_points for each call.
     This does NOT rely on StrategyResult table; it recomputes outcomes for each TP/SL combo.
+
+    IMPORTANT:
+    We simulate ONLY DONE calls (same as your "only done of course" rule).
     """
-    trade_entry_sol = float(entry_sol) if entry_sol is not None else float(getattr(settings, "PAPER_ENTRY_SOL", 0.1))
+    trade_entry_sol = float(entry_sol) if entry_sol is not None else float(
+        getattr(settings, "PAPER_ENTRY_SOL", 0.1)
+    )
+
     tp_list = _parse_csv_floats(tp_values)
     sl_list = _parse_csv_floats(sl_values)
 
@@ -211,17 +220,17 @@ def grid_simulation(
         if not ch:
             raise HTTPException(status_code=404, detail="Channel not found")
 
-        # Load calls + their price points in one go
+        # ✅ ONLY DONE calls (skip RECORDING + IGNORED_NO_PRICE)
         stmt = (
             select(Call)
             .where(Call.channel_id == ch.id)
-            .where(Call.status != "IGNORED_NO_PRICE")
+            .where(Call.status == "DONE")
             .options(selectinload(Call.prices))
             .order_by(Call.started_at.asc(), Call.id.asc())
         )
         calls = list(db.execute(stmt).scalars().all())
 
-        # keep only calls that have some usable data
+        # keep only calls that have some usable data (entry OR at least 1 point)
         usable: list[Call] = []
         for c in calls:
             if c.entry_price_usd is not None:
@@ -230,7 +239,6 @@ def grid_simulation(
             if c.prices and len(c.prices) > 0:
                 usable.append(c)
 
-        # Compute for each (tp,sl)
         results: list[GridCellOut] = []
 
         for tp in tp_list:
