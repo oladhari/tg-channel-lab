@@ -1,6 +1,5 @@
 // frontend/src/app/page.tsx
 import AddChannelForm from "./AddChannelForm";
-import PaperControls from "./PaperControls";
 import ChannelRowActions from "./ChannelRowActions";
 import { getChannels, getPaperStats, getLiveConfig } from "../lib/api";
 
@@ -62,7 +61,6 @@ export default async function Home(props: {
       </p>
 
       <AddChannelForm />
-      <PaperControls />
 
       {/* rest unchanged */}
       <section style={{ marginTop: 28 }}>
