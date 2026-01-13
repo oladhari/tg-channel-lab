@@ -10,6 +10,7 @@ from pathlib import Path
 from telethon import TelegramClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from app.db.session import SessionLocal
 from app.models import Call, StrategyResult
@@ -20,28 +21,28 @@ GMGN_SELL_PERCENT = os.getenv("GMGN_SELL_PERCENT", "100%").strip()
 LIVE_STRATEGY_KEY = os.getenv("LIVE_STRATEGY_KEY", "tp35_sl20").strip()
 TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "5"))
 
-# You have GMGN_COOLDOWN_SEC in .env but code used GMGN_SELL_COOLDOWN_SEC before
 SELL_COOLDOWN_SEC = int(os.getenv("GMGN_SELL_COOLDOWN_SEC", os.getenv("GMGN_COOLDOWN_SEC", "45")))
 
 TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"])
 TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
 
-# ✅ Session files are SQLite; DO NOT share same session between listener & trader
 SESSION_DIR = Path(os.environ.get("TELEGRAM_SESSION_DIR", "/app/sessions"))
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 TRADER_SESSION_NAME = os.environ.get("TELEGRAM_SESSION_TRADER", "tg_lab_session_trader").strip()
 if not TRADER_SESSION_NAME:
-    raise SystemExit("[TRADER] TELEGRAM_SESSION_TRADER is empty")
+    raise SystemExit("[TRADER_GMGN] TELEGRAM_SESSION_TRADER is empty")
 
 SESSION_PATH = str(SESSION_DIR / f"{TRADER_SESSION_NAME}.session")
+
 import fcntl
 _lock_fp = open(SESSION_PATH + ".lock", "w")
 try:
     fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
     raise SystemExit(f"[LOCK] Session already in use: {SESSION_PATH}")
-client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, receive_updates=False)
+
+client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELELEGRAM_API_HASH := TELEGRAM_API_HASH, receive_updates=False)
 
 _last_sent: dict[int, float] = {}  # call_id -> ts
 
@@ -57,8 +58,8 @@ def pick_ready_calls(db: Session) -> list[tuple[Call, StrategyResult]]:
         select(c, sr)
         .join(sr, sr.call_id == c.id)
         .where(c.status == "DONE")
-        .where(c.live_sell_enabled == True)  # noqa
-        .where(c.live_sell_status == "NONE")
+        .where(c.live_sell_enabled == True)  # noqa: E712
+        .where(c.live_sell_status == "FALLBACK_GMGN")  # ✅ ONLY fallback
         .where(sr.strategy_key == LIVE_STRATEGY_KEY)
         .order_by(c.started_at.asc())
         .limit(50)
@@ -66,25 +67,40 @@ def pick_ready_calls(db: Session) -> list[tuple[Call, StrategyResult]]:
     return list(db.execute(stmt).all())
 
 
+async def open_db_retry(max_wait_sec: int = 60) -> Session:
+    start = time.time()
+    while True:
+        try:
+            db = SessionLocal()
+            db.execute(select(1))
+            return db
+        except OperationalError as e:
+            if time.time() - start > max_wait_sec:
+                raise
+            print(f"[TRADER_GMGN][DB RETRY] err={str(e)[:200]}", flush=True)
+            await asyncio.sleep(2)
+
+
 async def loop() -> None:
     if not GMGN_TARGET:
-        raise SystemExit("GMGN_TARGET is empty. Set it in .env")
+        raise SystemExit("[TRADER_GMGN] GMGN_TARGET is empty. Set it in .env")
 
     print(
-        f"[TRADER] starting | session={SESSION_PATH} | target={GMGN_TARGET} "
-        f"| strategy={LIVE_STRATEGY_KEY} | poll={TRADER_POLL_SEC}s | cooldown={SELL_COOLDOWN_SEC}s"
+        f"[TRADER_GMGN] starting | session={SESSION_PATH} | target={GMGN_TARGET} "
+        f"| strategy={LIVE_STRATEGY_KEY} | poll={TRADER_POLL_SEC}s | cooldown={SELL_COOLDOWN_SEC}s "
+        f"| sell_percent={GMGN_SELL_PERCENT}",
+        flush=True,
     )
 
-    # ✅ Do not prompt for login (docker has no TTY). Either session is authorized or fail clearly.
     await client.connect()
     if not await client.is_user_authorized():
         raise SystemExit(
-            f"[TRADER] Telegram session not authorized: {SESSION_PATH}. "
+            f"[TRADER_GMGN] Telegram session not authorized: {SESSION_PATH}. "
             "Create it once interactively, then restart trader."
         )
 
     while True:
-        db = SessionLocal()
+        db = await open_db_retry()
         try:
             rows = pick_ready_calls(db)
 
@@ -95,6 +111,8 @@ async def loop() -> None:
                     continue
 
                 reason = (sr.outcome or "").upper()  # TP|SL|TIME
+                print(f"[TRADER_GMGN][PICK] call_id={call.id} {call.mint[:8]}... reason={reason}", flush=True)
+
                 try:
                     await gmgn_sell(call.mint)
 
@@ -107,15 +125,17 @@ async def loop() -> None:
                     db.add(call)
                     db.commit()
 
-                    print(f"[TRADER][SELL SENT] call_id={call.id} {call.mint[:8]}... reason={reason}")
+                    print(f"[TRADER_GMGN][SELL SENT] call_id={call.id} {call.mint[:8]}... reason={reason}", flush=True)
 
                 except Exception as e:
                     call.live_sell_status = "ERROR"
                     call.live_sell_error = str(e)[:300]
+
                     _last_sent[call.id] = now
                     db.add(call)
                     db.commit()
-                    print(f"[TRADER][SELL ERROR] call_id={call.id} err={e}")
+
+                    print(f"[TRADER_GMGN][SELL ERROR] call_id={call.id} err={e}", flush=True)
 
         finally:
             db.close()

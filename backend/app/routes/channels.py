@@ -29,6 +29,8 @@ def create_channel(payload: ChannelCreate):
             telegram_username=payload.telegram_username.strip().lstrip("@"),
             enabled=payload.enabled,
             live_enabled=payload.live_enabled,
+            # ✅ NEW
+            live_buy_amount_sol=payload.live_buy_amount_sol,
         )
         db.add(ch)
         db.commit()
@@ -51,10 +53,19 @@ def update_channel(channel_id: int, payload: ChannelUpdate):
 
         if payload.enabled is not None:
             ch.enabled = payload.enabled
+            # Optional safety: if disabling recording, also disable live
+            if not ch.enabled:
+                ch.live_enabled = False
+
         if payload.live_enabled is not None:
             ch.live_enabled = payload.live_enabled
+
         if payload.telegram_username is not None:
             ch.telegram_username = payload.telegram_username.strip().lstrip("@")
+
+        # ✅ NEW
+        if getattr(payload, "live_buy_amount_sol", None) is not None:
+            ch.live_buy_amount_sol = payload.live_buy_amount_sol  # type: ignore[attr-defined]
 
         db.commit()
         db.refresh(ch)
@@ -65,6 +76,7 @@ def update_channel(channel_id: int, payload: ChannelUpdate):
     finally:
         db.close()
 
+
 @router.post("/{channel_id}/toggle-live", response_model=ChannelOut)
 def toggle_live(channel_id: int):
     db = SessionLocal()
@@ -72,12 +84,14 @@ def toggle_live(channel_id: int):
         ch = db.query(Channel).filter(Channel.id == channel_id).one_or_none()
         if not ch:
             raise HTTPException(status_code=404, detail="Channel not found")
+
         ch.live_enabled = not ch.live_enabled
         db.commit()
         db.refresh(ch)
         return ch
     finally:
         db.close()
+
 
 @router.post("/{channel_id}/toggle", response_model=ChannelOut)
 def toggle_enabled(channel_id: int):
@@ -86,6 +100,7 @@ def toggle_enabled(channel_id: int):
         ch = db.query(Channel).filter(Channel.id == channel_id).one_or_none()
         if not ch:
             raise HTTPException(status_code=404, detail="Channel not found")
+
         ch.enabled = not ch.enabled
 
         # Optional safety: if disabling recording, also disable live

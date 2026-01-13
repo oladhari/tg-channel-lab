@@ -4,14 +4,12 @@ from __future__ import annotations
 import os
 import json
 import base64
-import time
 from typing import Optional, Tuple, List, Any
 
 import requests
 import base58
 
 from solana.rpc.api import Client as SolClient
-from solana.rpc.types import TokenAccountOpts
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -20,7 +18,11 @@ from solders.transaction import VersionedTransaction
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+
+
+def _log(event: str, **fields) -> None:
+    parts = " ".join([f"{k}={v}" for k, v in fields.items()])
+    print(f"[RAY_EXEC][{event}] {parts}", flush=True)
 
 
 def _load_keypair(private_key: str | None = None) -> Keypair:
@@ -49,6 +51,7 @@ def _swap_host() -> str:
 
 
 def _tx_version() -> str:
+    # Raydium Trade API supports LEGACY or V0 depending on endpoint; we use V0 by default
     return os.getenv("RAYDIUM_TX_VERSION", "V0").strip().upper()
 
 
@@ -61,53 +64,6 @@ def _get_ata(owner: Pubkey, mint: Pubkey) -> Pubkey:
     seeds = [bytes(owner), bytes(TOKEN_PROGRAM_ID), bytes(mint)]
     ata, _bump = Pubkey.find_program_address(seeds, ATA_PROGRAM)
     return ata
-
-
-def get_token_balance_raw(token_mint: str, retries: int = 2, delay_sec: float = 0.35) -> int:
-    client = _rpc_client()
-    kp = _load_keypair()
-    owner = kp.pubkey()
-    mint_pk = Pubkey.from_string(token_mint)
-
-    last_err = None
-    for _ in range(retries + 1):
-        try:
-            total = 0
-
-            resp1 = client.get_token_accounts_by_owner(
-                owner,
-                opts=TokenAccountOpts(mint=mint_pk),
-                program_id=TOKEN_PROGRAM_ID,
-            )
-            resp2 = client.get_token_accounts_by_owner(
-                owner,
-                opts=TokenAccountOpts(mint=mint_pk),
-                program_id=TOKEN_2022_PROGRAM_ID,
-            )
-
-            def _sum_from_resp(resp) -> int:
-                if not isinstance(resp, dict):
-                    resp = resp.to_json() if hasattr(resp, "to_json") else resp.__dict__
-                vals = resp.get("result", {}).get("value", []) if isinstance(resp, dict) else []
-                s = 0
-                for item in vals:
-                    try:
-                        parsed = item["account"]["data"]["parsed"]
-                        amt = parsed["info"]["tokenAmount"]["amount"]
-                        s += int(amt)
-                    except Exception:
-                        continue
-                return s
-
-            total += _sum_from_resp(resp1)
-            total += _sum_from_resp(resp2)
-            return int(total)
-
-        except Exception as e:
-            last_err = e
-            time.sleep(delay_sec)
-
-    raise RuntimeError(f"get_token_balance_raw failed: {last_err}")
 
 
 def raydium_compute_swap_base_in(
@@ -130,11 +86,19 @@ def raydium_compute_swap_base_in(
         "txVersion": txv,
     }
 
+    _log("COMPUTE_REQ", input=input_mint[:8], output=output_mint[:8], amount=amount_raw, bps=slippage_bps, txv=txv)
     r = requests.get(url, params=params, timeout=timeout)
     r.raise_for_status()
     data = r.json()
+
     if not data.get("success", False):
+        msg = str(data.get("msg") or data.get("error") or data)
+        if "REQ_SLIPPAGE_BPS_ERROR" in msg:
+            raise RuntimeError(
+                f"Raydium compute failed: REQ_SLIPPAGE_BPS_ERROR (slippage_bps={slippage_bps}) | {data}"
+            )
         raise RuntimeError(f"Raydium compute failed: {data}")
+
     return data
 
 
@@ -171,6 +135,7 @@ def raydium_build_swap_txs(
     if output_account:
         body["outputAccount"] = output_account
 
+    _log("TX_BUILD_REQ", txv=txv, wrapSol=wrap_sol, unwrapSol=unwrap_sol, cu=cu_price)
     r = requests.post(url, json=body, timeout=timeout)
     r.raise_for_status()
     data = r.json()
@@ -178,18 +143,22 @@ def raydium_build_swap_txs(
         raise RuntimeError(f"Raydium tx build failed: {data}")
 
     txs = data.get("data", [])
-    return [x["transaction"] for x in txs if x.get("transaction")]
+    out = [x["transaction"] for x in txs if x.get("transaction")]
+    if not out:
+        raise RuntimeError(f"Raydium tx build returned no transactions: {data}")
+    return out
 
 
 def _send_v0_txs(base64_txs: List[str], kp: Keypair, rpc_url: str | None = None) -> List[str]:
     client = _rpc_client(rpc_url)
     sigs: List[str] = []
 
-    for tx_b64 in base64_txs:
+    for i, tx_b64 in enumerate(base64_txs, start=1):
         raw = base64.b64decode(tx_b64)
         vtx = VersionedTransaction.from_bytes(raw)
         vtx_signed = vtx.sign([kp])
 
+        _log("SEND_TX", idx=i, bytes=len(bytes(vtx_signed)))
         resp = client.send_raw_transaction(
             bytes(vtx_signed),
             opts={"skip_preflight": True, "max_retries": 3},
@@ -202,7 +171,7 @@ def _send_v0_txs(base64_txs: List[str], kp: Keypair, rpc_url: str | None = None)
 
         if not sig:
             raise RuntimeError(f"Raydium send tx failed (no signature): {resp}")
-        sigs.append(sig)
+        sigs.append(str(sig))
 
     return sigs
 
@@ -217,10 +186,6 @@ def raydium_swap_exact_in(
     rpc_url: str | None = None,
     private_key: str | None = None,
 ) -> Tuple[List[str], dict[str, Any]]:
-    """
-    WORKING synchronous Raydium swap.
-    Returns: ([sig...], compute_response_dict)
-    """
     kp = _load_keypair(private_key)
     owner = kp.pubkey()
 
@@ -255,4 +220,5 @@ def raydium_swap_exact_in(
     )
 
     sigs = _send_v0_txs(txs_b64, kp, rpc_url)
+    _log("OK", sigs=",".join(sigs))
     return sigs, compute_resp

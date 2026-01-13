@@ -6,11 +6,24 @@ import { useRouter } from "next/navigation";
 import { normalizeTelegramUsername } from "../lib/telegram";
 import { createChannel } from "../lib/api";
 
+function toNumOrNull(v: string): number | null {
+  const t = v.trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
 export default function AddChannelForm() {
   const router = useRouter();
 
   const [input, setInput] = useState("");
   const [liveEnabled, setLiveEnabled] = useState(false); // default false ✅
+
+  // ✅ NEW: per-channel live buy amount (SOL)
+  // Default to 0.005 so you can test with low balance
+  const [amount, setAmount] = useState("0.005");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,18 +37,34 @@ export default function AddChannelForm() {
       return;
     }
 
+    const parsedAmount = toNumOrNull(amount);
+    if (parsedAmount != null) {
+      if (parsedAmount <= 0) {
+        setError("Live buy amount must be > 0.");
+        return;
+      }
+      // tiny safety guard, optional
+      if (parsedAmount > 10) {
+        setError("Live buy amount looks too high. Please double-check.");
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       // ✅ Keep add-channel working via our unified /api/channels route
+      // ✅ Include live_buy_amount_sol ONLY if user provided a valid number
       await createChannel({
         key: normalized,
         telegram_username: normalized,
         enabled: true, // recording ON by default ✅
         live_enabled: liveEnabled, // user choice ✅
+        live_buy_amount_sol: parsedAmount, // ✅ NEW
       });
 
       setInput("");
       setLiveEnabled(false);
+      setAmount("0.005");
 
       // refresh Server Component data (channels/stats)
       router.refresh();
@@ -63,14 +92,25 @@ export default function AddChannelForm() {
         </div>
       )}
 
-      <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <input
-          type="checkbox"
-          checked={liveEnabled}
-          onChange={(e) => setLiveEnabled(e.target.checked)}
-        />
-        Live enabled (future live trading / alerts)
-      </label>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" checked={liveEnabled} onChange={(e) => setLiveEnabled(e.target.checked)} />
+          Live enabled (future live trading / alerts)
+        </label>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 12, color: "#555" }}>Live buy amount (SOL)</span>
+          <input
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            type="number"
+            step="0.0001"
+            min="0"
+            style={{ width: 130, padding: 6 }}
+            title="Per-channel live buy size in SOL"
+          />
+        </label>
+      </div>
 
       {error && <div style={{ color: "crimson", marginBottom: 8 }}>{error}</div>}
 

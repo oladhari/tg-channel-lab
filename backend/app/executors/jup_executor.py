@@ -13,7 +13,6 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solders.message import to_bytes_versioned
 
-# Jupiter / Solana constants
 SOL_MINT = "So11111111111111111111111111111111111111112"
 
 RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
@@ -25,12 +24,13 @@ JUP_SWAP_URL = f"{JUP_BASE_URL}/swap/v1/swap"
 MAX_SEND_RETRIES = int(os.getenv("JUP_MAX_SEND_RETRIES", "3"))
 
 
+def _log(event: str, **fields) -> None:
+    parts = " ".join([f"{k}={v}" for k, v in fields.items()])
+    print(f"[JUP_EXEC][{event}] {parts}", flush=True)
+
+
 def sol_to_lamports(sol: float) -> int:
     return int(sol * 1_000_000_000)
-
-
-def lamports_to_sol(lamports: int) -> float:
-    return lamports / 1_000_000_000
 
 
 def _load_keypair(private_key: str | None = None) -> Keypair:
@@ -63,8 +63,7 @@ def _rpc_call(method: str, params: list, rpc_url: str) -> Dict[str, Any]:
     r = requests.post(rpc_url, json=payload, timeout=30)
     if r.status_code != 200:
         raise RuntimeError(f"RPC {method} HTTP {r.status_code}: {r.text[:250]}")
-    jr = r.json()
-    return jr
+    return r.json()
 
 
 def _simulate_tx(raw_tx: VersionedTransaction, rpc_url: str) -> Dict[str, Any]:
@@ -99,7 +98,7 @@ def _send_signed_tx(signed_tx: VersionedTransaction, rpc_url: str) -> str:
     sig = jr.get("result")
     if not sig:
         raise RuntimeError(f"RPC sendTransaction unexpected response: {jr}")
-    return sig
+    return str(sig)
 
 
 def _is_blockhash_error(msg: str) -> bool:
@@ -115,13 +114,7 @@ def _is_blockhash_error(msg: str) -> bool:
     )
 
 
-def _jup_get_quote(
-    *,
-    input_mint: str,
-    output_mint: str,
-    in_amount_raw: int,
-    slippage_bps: int,
-) -> Dict[str, Any]:
+def _jup_get_quote(*, input_mint: str, output_mint: str, in_amount_raw: int, slippage_bps: int) -> Dict[str, Any]:
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
@@ -134,11 +127,7 @@ def _jup_get_quote(
     return r.json()
 
 
-def _jup_build_swap_tx(
-    *,
-    quote_response: Dict[str, Any],
-    wrap_and_unwrap_sol: bool,
-) -> VersionedTransaction:
+def _jup_build_swap_tx(*, quote_response: Dict[str, Any], wrap_and_unwrap_sol: bool) -> VersionedTransaction:
     payload = {
         "quoteResponse": quote_response,
         "userPublicKey": _WALLET_PUBKEY_STR,
@@ -173,20 +162,24 @@ def jup_swap_exact_in(
     rpc_url: str | None = None,
     private_key: str | None = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """
-    WORKING synchronous Jupiter swap.
-    Returns: (tx_signature, quote_dict)
-    """
     rpc_url = (rpc_url or RPC_URL).strip()
     if not rpc_url:
         raise RuntimeError("SOLANA_RPC_URL is missing")
 
-    # If a private_key arg is provided, we sign with it instead of env.
-    # (Keeps your current function signature future-proof.)
     global _wallet, _WALLET_PUBKEY_STR
     if private_key:
         _wallet = _load_keypair(private_key)
         _WALLET_PUBKEY_STR = str(_wallet.pubkey())
+
+    _log(
+        "START",
+        input=input_mint,
+        output=output_mint,
+        amount=in_amount_raw,
+        bps=slippage_bps,
+        priorityLevel=os.getenv("JUP_PRIORITY_LEVEL", "veryHigh"),
+        maxLamports=os.getenv("JUP_MAX_PRIORITY_FEE_LAMPORTS", "1000000"),
+    )
 
     quote = _jup_get_quote(
         input_mint=input_mint,
@@ -199,11 +192,13 @@ def jup_swap_exact_in(
 
     for attempt in range(1, MAX_SEND_RETRIES + 1):
         try:
+            _log("BUILD_TX", attempt=attempt)
             raw_tx = _jup_build_swap_tx(
                 quote_response=quote,
                 wrap_and_unwrap_sol=wrap_and_unwrap_sol,
             )
 
+            _log("SIMULATE", attempt=attempt)
             sim = _simulate_tx(raw_tx, rpc_url)
             if sim.get("err") is not None:
                 raise RuntimeError(f"Jupiter simulation error: {sim.get('err')}")
@@ -212,13 +207,17 @@ def jup_swap_exact_in(
             signature = _wallet.sign_message(msg_bytes)
             signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
+            _log("SEND", attempt=attempt)
             sig_str = _send_signed_tx(signed_tx, rpc_url)
+            _log("OK", sig=sig_str, attempt=attempt)
             return sig_str, quote
 
         except Exception as e:
             last_error = e
+            _log("FAIL", attempt=attempt, err=str(e)[:500])
             if _is_blockhash_error(str(e)) and attempt < MAX_SEND_RETRIES:
                 continue
             break
 
     raise RuntimeError(f"Jupiter swap failed: {last_error}")
+

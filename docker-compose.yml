@@ -93,9 +93,19 @@ services:
     env_file: .env
     command: ["python", "-m", "app.workers.run_trader_gmgn"]
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     volumes:
       - ./sessions:/app/sessions
+    restart: unless-stopped
+
+  trader-live:
+    build: ./backend
+    env_file: .env
+    command: ["python", "-m", "app.workers.run_trader_live"]
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   buyer:
