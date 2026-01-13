@@ -78,3 +78,22 @@ def toggle_live(channel_id: int):
         return ch
     finally:
         db.close()
+
+@router.post("/{channel_id}/toggle", response_model=ChannelOut)
+def toggle_enabled(channel_id: int):
+    db = SessionLocal()
+    try:
+        ch = db.query(Channel).filter(Channel.id == channel_id).one_or_none()
+        if not ch:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        ch.enabled = not ch.enabled
+
+        # Optional safety: if disabling recording, also disable live
+        if not ch.enabled:
+            ch.live_enabled = False
+
+        db.commit()
+        db.refresh(ch)
+        return ch
+    finally:
+        db.close()

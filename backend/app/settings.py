@@ -13,8 +13,6 @@ class Settings(BaseSettings):
     TELEGRAM_API_ID: int
     TELEGRAM_API_HASH: str
 
-    # Accept TELEGRAM_SESSION_NAME, but also allow TELEGRAM_SESSION (your current .env)
-    TELEGRAM_SESSION_NAME: str = Field(default="tg_lab_session", validation_alias="TELEGRAM_SESSION")
 
     SCAN_DELAY_SEC: int = 6
     RECORDING_WINDOW_MIN: int = 25

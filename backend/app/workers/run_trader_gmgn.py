@@ -35,9 +35,13 @@ if not TRADER_SESSION_NAME:
     raise SystemExit("[TRADER] TELEGRAM_SESSION_TRADER is empty")
 
 SESSION_PATH = str(SESSION_DIR / f"{TRADER_SESSION_NAME}.session")
-
-client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH)
-
+import fcntl
+_lock_fp = open(SESSION_PATH + ".lock", "w")
+try:
+    fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(f"[LOCK] Session already in use: {SESSION_PATH}")
+client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, receive_updates=False)
 
 _last_sent: dict[int, float] = {}  # call_id -> ts
 

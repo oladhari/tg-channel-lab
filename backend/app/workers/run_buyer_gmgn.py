@@ -35,8 +35,14 @@ if not BUYER_SESSION_NAME:
     raise SystemExit("[BUYER] TELEGRAM_SESSION_BUYER is empty")
 
 SESSION_PATH = str(SESSION_DIR / f"{BUYER_SESSION_NAME}.session")
+import fcntl
+_lock_fp = open(SESSION_PATH + ".lock", "w")
+try:
+    fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(f"[LOCK] Session already in use: {SESSION_PATH}")
+client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, receive_updates=False)
 
-client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
 
 _last_sent: dict[int, float] = {}  # call_id -> ts
@@ -53,13 +59,14 @@ def pick_ready_calls(db: Session) -> list[Call]:
     stmt = (
         select(c)
         .where(c.live_buy_enabled == True)        # noqa: E712
-        .where(c.live_buy_status == "NONE")
-        .where(c.status == "RECORDING")          # ✅ only buy active calls
-        .where(c.entry_price_usd.isnot(None))    # ✅ wait until we have first price point
+        .where(c.live_buy_status == "FALLBACK_GMGN")
+        .where(c.status == "RECORDING")
+        .where(c.entry_price_usd.isnot(None))
         .order_by(c.started_at.asc())
         .limit(50)
     )
     return list(db.execute(stmt).scalars().all())
+
 
 
 async def loop() -> None:

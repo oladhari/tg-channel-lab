@@ -8,6 +8,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
   api:
     build: ./backend
@@ -100,6 +106,15 @@ services:
       - db
     volumes:
       - ./sessions:/app/sessions
+    restart: unless-stopped
+
+  buyer-live:
+    build: ./backend
+    env_file: .env
+    command: ["python", "-m", "app.workers.run_buyer_live"]
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
