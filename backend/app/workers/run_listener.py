@@ -38,7 +38,12 @@ if not LISTENER_SESSION_NAME:
     raise SystemExit("[LISTENER] TELEGRAM_SESSION_LISTENER is empty")
 
 SESSION_PATH = str(SESSION_DIR / f"{LISTENER_SESSION_NAME}.session")
-
+import fcntl
+_lock_fp = open(SESSION_PATH + ".lock", "w")
+try:
+    fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(f"[LOCK] Session already in use: {SESSION_PATH}")
 client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
 

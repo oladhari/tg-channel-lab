@@ -1,5 +1,4 @@
 // frontend/src/app/channels/[key]/page.tsx
-import PaperControls from "../../PaperControls";
 import { getChannels, getCalls, getPaperStats } from "../../../lib/api";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +63,10 @@ export default async function ChannelPage(props: {
       <p style={{ marginTop: 0 }}>
         <a href="/" style={{ textDecoration: "underline" }}>← Back to dashboard</a>{" "}
         <span style={{ margin: "0 8px", color: "#bbb" }}>|</span>
+        <a href={`/channels/${channelKey}/simulation`} style={{ textDecoration: "underline" }}>
+          Open Simulation
+        </a>
+        <span style={{ margin: "0 8px", color: "#bbb" }}>|</span>
         <a href="/calls" style={{ textDecoration: "underline" }}>Open Calls Explorer</a>
       </p>
 
@@ -84,8 +87,6 @@ export default async function ChannelPage(props: {
       ) : (
         <p style={{ marginTop: 0, color: "#444" }}>Telegram: (unknown)</p>
       )}
-
-      <PaperControls />
 
       <section style={{ marginTop: 24 }}>
         <h2 style={{ marginBottom: 10 }}>

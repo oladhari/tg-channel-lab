@@ -26,7 +26,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
     const ct = res.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
       const j = await res.json().catch(() => null);
-      const msg = j?.detail || j?.message || JSON.stringify(j);
+      const msg = (j as any)?.detail || (j as any)?.message || JSON.stringify(j);
       throw new Error(`HTTP ${res.status} ${res.statusText} — ${msg}`);
     }
     const text = await res.text().catch(() => "");
@@ -45,6 +45,9 @@ export type Channel = {
   telegram_username: string;
   enabled: boolean;
   live_enabled: boolean;
+
+  // ✅ NEW: per-channel live buy amount (SOL)
+  live_buy_amount_sol: number | null;
 };
 
 export type PaperStat = {
@@ -71,6 +74,9 @@ export function createChannel(body: {
   telegram_username: string;
   enabled: boolean;
   live_enabled: boolean;
+
+  // ✅ NEW
+  live_buy_amount_sol?: number | null;
 }) {
   return http<Channel>("/channels", { method: "POST", body: JSON.stringify(body) });
 }
@@ -82,6 +88,24 @@ export function toggleChannelEnabled(id: number) {
 // ✅ This is the ONLY correct endpoint for Live toggling
 export function toggleChannelLive(id: number) {
   return http<Channel>(`/channels/${id}/toggle-live`, { method: "POST" });
+}
+
+// ✅ NEW: PATCH channel (generic updater)
+export function updateChannel(
+  id: number,
+  body: Partial<{
+    enabled: boolean;
+    live_enabled: boolean;
+    telegram_username: string;
+    live_buy_amount_sol: number | null;
+  }>
+) {
+  return http<Channel>(`/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+// ✅ NEW: convenience setter
+export function setChannelLiveBuyAmount(id: number, amountSol: number | null) {
+  return updateChannel(id, { live_buy_amount_sol: amountSol });
 }
 
 // --- Calls / stats ---
@@ -191,4 +215,43 @@ export function getLiveQueue(params?: { limit?: number }) {
   const qs = new URLSearchParams();
   qs.set("limit", String(params?.limit ?? 200));
   return http<any[]>(`/live/queue?${qs.toString()}`);
+}
+
+export type GridCell = {
+  tp_pct: number;
+  sl_pct: number;
+  n_trades: number;
+  tp: number;
+  sl: number;
+  time: number;
+  win_rate_tp_pct: number;
+  avg_pnl_pct: number;
+  start_balance_sol: number;
+  end_balance_sol: number;
+};
+
+export type GridSim = {
+  channel_key: string;
+  start_balance_sol: number;
+  entry_sol: number;
+  tp_values: number[];
+  sl_values: number[];
+  results: GridCell[];
+};
+
+export function getGridSim(params: {
+  channel_key: string;
+  tp_values?: string; // csv string
+  sl_values?: string; // csv string
+  start_balance_sol?: number;
+  entry_sol?: number;
+}) {
+  const qs = new URLSearchParams();
+  qs.set("channel_key", params.channel_key);
+  qs.set("tp_values", params.tp_values ?? "35,40,45,50,55,60,65");
+  qs.set("sl_values", params.sl_values ?? "20,25,30,35,40,45,50");
+  qs.set("start_balance_sol", String(params.start_balance_sol ?? 1.0));
+  if (params.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
+
+  return http<GridSim>(`/stats/grid?${qs.toString()}`);
 }

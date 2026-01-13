@@ -9,7 +9,7 @@ class ChannelCreate(BaseModel):
     telegram_username: str = Field(..., examples=["mattprintalphacalls"])
     enabled: bool = True
     live_enabled: bool = False
-
+    live_buy_amount_sol: float = Field(default=0.005, gt=0)
 
 class ChannelOut(BaseModel):
     id: int
@@ -17,7 +17,8 @@ class ChannelOut(BaseModel):
     telegram_username: str
     enabled: bool
     live_enabled: bool
-
+    live_buy_amount_sol: float   # ✅ NEW
+    
     class Config:
         from_attributes = True
 
@@ -26,3 +27,5 @@ class ChannelUpdate(BaseModel):
     enabled: bool | None = None
     live_enabled: bool | None = None
     telegram_username: str | None = None
+    live_buy_amount_sol: float | None = Field(default=None, gt=0)  # ✅ NEW
+

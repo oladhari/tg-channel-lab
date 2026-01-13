@@ -7,3 +7,6 @@ pydantic==2.10.3
 pydantic-settings==2.6.1
 requests==2.32.3
 telethon==1.42.0
+solana==0.36.6
+solders==0.26.0
+base58==2.1.1
