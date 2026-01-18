@@ -1,5 +1,6 @@
 // frontend/src/app/channels/[key]/page.tsx
 import { getChannels, getCalls, getPaperStats } from "../../../lib/api";
+import { gmgnSolanaTokenUrl } from "../../../lib/links";
 
 export const dynamic = "force-dynamic";
 
@@ -11,10 +12,6 @@ function toNum(v: string | undefined, fallback: number) {
 
 function makeStrategyKey(tp: number, sl: number) {
   return `tp${tp}_sl${sl}`;
-}
-
-function dexscreenerSolanaUrl(mint: string) {
-  return `https://dexscreener.com/solana/${mint}`;
 }
 
 type SearchParams = { [k: string]: string | string[] | undefined };
@@ -152,7 +149,7 @@ export default async function ChannelPage(props: {
             <tbody>
               {calls.map((c: any) => {
                 const mint: string = typeof c.mint === "string" ? c.mint : "";
-                const dexUrl = mint ? dexscreenerSolanaUrl(mint) : null;
+                const url = mint ? gmgnSolanaTokenUrl(mint) : null;
 
                 return (
                   <tr key={c.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
@@ -161,9 +158,9 @@ export default async function ChannelPage(props: {
                     </td>
 
                     <td style={{ fontFamily: "monospace" }}>
-                      {dexUrl ? (
+                      {url ? (
                         <a
-                          href={dexUrl}
+                          href={url}
                           target="_blank"
                           rel="noreferrer"
                           style={{ textDecoration: "underline" }}
@@ -199,4 +196,3 @@ export default async function ChannelPage(props: {
     </main>
   );
 }
-
