@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import OperationalError
 
 from app.db.session import SessionLocal
-from app.models import Call
+from app.models import Call, Channel
 
 from app.executors.jup_executor import SOL_MINT, jup_swap_exact_in, sol_to_lamports
 from app.executors.raydium_executor import raydium_swap_exact_in
@@ -73,10 +73,14 @@ def _resolve_amount(call: Call) -> tuple[float, str, dict]:
 
 def pick_ready_calls(db: Session) -> list[Call]:
     c = Call
+    ch = Channel
+
     stmt = (
         select(c)
-        .options(joinedload(c.channel))  # IMPORTANT
-        .where(c.live_buy_enabled == True)  # noqa: E712
+        .join(ch, ch.id == c.channel_id)
+        .options(joinedload(c.channel))
+        .where(ch.live_enabled == True)          # ✅ ADD THIS
+        .where(c.live_buy_enabled == True)
         .where(c.live_buy_status == "NONE")
         .where(c.status == "RECORDING")
         .where(c.entry_price_usd.isnot(None))
@@ -84,6 +88,7 @@ def pick_ready_calls(db: Session) -> list[Call]:
         .limit(50)
     )
     return list(db.execute(stmt).scalars().all())
+
 
 
 async def open_db_retry(max_wait_sec: int = 60) -> Session:

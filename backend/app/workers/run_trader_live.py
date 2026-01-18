@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
 from app.db.session import SessionLocal
-from app.models import Call, StrategyResult
+from app.models import Call, Channel, StrategyResult
+
 
 from app.executors.jup_executor import SOL_MINT, jup_swap_exact_in
 from app.executors.raydium_executor import raydium_swap_exact_in
@@ -122,18 +123,22 @@ def _compute_sell_amount_raw(balance_raw: int) -> int:
 
 
 def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult]]:
-    c, sr = Call, StrategyResult
+    c, sr, ch = Call, StrategyResult, Channel
+
     stmt = (
         select(c, sr)
+        .join(ch, ch.id == c.channel_id)
         .join(sr, sr.call_id == c.id)
+        .where(ch.live_enabled == True)          # ✅ ADD THIS
         .where(c.status == "DONE")
-        .where(c.live_sell_enabled == True)  # noqa: E712
+        .where(c.live_sell_enabled == True)
         .where(c.live_sell_status == "NONE")
         .where(sr.strategy_key == LIVE_STRATEGY_KEY)
         .order_by(c.started_at.asc())
         .limit(50)
     )
     return list(db.execute(stmt).all())
+
 
 
 async def open_db_retry(max_wait_sec: int = 60) -> Session:
