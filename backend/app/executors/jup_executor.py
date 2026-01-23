@@ -23,6 +23,10 @@ JUP_SWAP_URL = f"{JUP_BASE_URL}/swap/v1/swap"
 
 MAX_SEND_RETRIES = int(os.getenv("JUP_MAX_SEND_RETRIES", "3"))
 
+# Aggressive knobs (used by workers too)
+LIVE_FAST_MODE = os.getenv("LIVE_FAST_MODE", "1").strip() not in ("0", "false", "False")
+LIVE_HTTP_TIMEOUT_SEC = float(os.getenv("LIVE_HTTP_TIMEOUT_SEC", "0.8"))
+
 
 def _log(event: str, **fields) -> None:
     parts = " ".join([f"{k}={v}" for k, v in fields.items()])
@@ -58,41 +62,31 @@ _wallet = _load_keypair()
 _WALLET_PUBKEY_STR = str(_wallet.pubkey())
 
 
-def _rpc_call(method: str, params: list, rpc_url: str) -> Dict[str, Any]:
+def _rpc_call(method: str, params: list, rpc_url: str, timeout_sec: float = 30.0) -> Dict[str, Any]:
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    r = requests.post(rpc_url, json=payload, timeout=30)
+    r = requests.post(rpc_url, json=payload, timeout=timeout_sec)
     if r.status_code != 200:
         raise RuntimeError(f"RPC {method} HTTP {r.status_code}: {r.text[:250]}")
     return r.json()
 
 
-def _simulate_tx(raw_tx: VersionedTransaction, rpc_url: str) -> Dict[str, Any]:
-    encoded_tx = base64.b64encode(bytes(raw_tx)).decode("utf-8")
-    jr = _rpc_call(
-        "simulateTransaction",
-        [encoded_tx, {"sigVerify": False, "encoding": "base64"}],
-        rpc_url,
-    )
-    if "error" in jr:
-        raise RuntimeError(f"RPC simulateTransaction error: {jr['error']}")
-    return jr.get("result", {}) or {}
-
-
-def _send_signed_tx(signed_tx: VersionedTransaction, rpc_url: str) -> str:
+def _send_signed_tx(signed_tx: VersionedTransaction, rpc_url: str, *, fast_mode: bool) -> str:
+    """
+    Aggressive:
+      - skipPreflight=True
+      - preflightCommitment='processed'
+      - maxRetries=0
+    """
     encoded_tx = base64.b64encode(bytes(signed_tx)).decode("utf-8")
-    jr = _rpc_call(
-        "sendTransaction",
-        [
-            encoded_tx,
-            {
-                "skipPreflight": False,
-                "preflightCommitment": "confirmed",
-                "encoding": "base64",
-                "maxRetries": 3,
-            },
-        ],
-        rpc_url,
-    )
+
+    opts = {
+        "skipPreflight": bool(fast_mode),
+        "preflightCommitment": "processed" if fast_mode else "confirmed",
+        "encoding": "base64",
+        "maxRetries": 0 if fast_mode else 3,
+    }
+
+    jr = _rpc_call("sendTransaction", [encoded_tx, opts], rpc_url, timeout_sec=8.0 if fast_mode else 30.0)
     if "error" in jr:
         raise RuntimeError(f"RPC sendTransaction error: {jr['error']}")
     sig = jr.get("result")
@@ -114,20 +108,32 @@ def _is_blockhash_error(msg: str) -> bool:
     )
 
 
-def _jup_get_quote(*, input_mint: str, output_mint: str, in_amount_raw: int, slippage_bps: int) -> Dict[str, Any]:
+def _jup_get_quote(
+    *,
+    input_mint: str,
+    output_mint: str,
+    in_amount_raw: int,
+    slippage_bps: int,
+    timeout_sec: float,
+) -> Dict[str, Any]:
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
         "amount": str(int(in_amount_raw)),
         "slippageBps": str(int(slippage_bps)),
     }
-    r = requests.get(JUP_QUOTE_URL, params=params, timeout=12)
+    r = requests.get(JUP_QUOTE_URL, params=params, timeout=timeout_sec)
     if r.status_code != 200:
         raise RuntimeError(f"Jupiter quote error {r.status_code}: {r.text[:250]}")
     return r.json()
 
 
-def _jup_build_swap_tx(*, quote_response: Dict[str, Any], wrap_and_unwrap_sol: bool) -> VersionedTransaction:
+def _jup_build_swap_tx(
+    *,
+    quote_response: Dict[str, Any],
+    wrap_and_unwrap_sol: bool,
+    timeout_sec: float,
+) -> VersionedTransaction:
     payload = {
         "quoteResponse": quote_response,
         "userPublicKey": _WALLET_PUBKEY_STR,
@@ -141,7 +147,7 @@ def _jup_build_swap_tx(*, quote_response: Dict[str, Any], wrap_and_unwrap_sol: b
             }
         },
     }
-    r = requests.post(JUP_SWAP_URL, json=payload, timeout=20)
+    r = requests.post(JUP_SWAP_URL, json=payload, timeout=timeout_sec)
     if r.status_code != 200:
         raise RuntimeError(f"Jupiter swap error {r.status_code}: {r.text[:250]}")
     data = r.json()
@@ -161,10 +167,14 @@ def jup_swap_exact_in(
     wrap_and_unwrap_sol: bool = True,
     rpc_url: str | None = None,
     private_key: str | None = None,
+    fast_mode: bool | None = None,
 ) -> Tuple[str, Dict[str, Any]]:
     rpc_url = (rpc_url or RPC_URL).strip()
     if not rpc_url:
         raise RuntimeError("SOLANA_RPC_URL is missing")
+
+    fast = LIVE_FAST_MODE if fast_mode is None else bool(fast_mode)
+    http_timeout = LIVE_HTTP_TIMEOUT_SEC if fast else 12.0
 
     global _wallet, _WALLET_PUBKEY_STR
     if private_key:
@@ -177,6 +187,8 @@ def jup_swap_exact_in(
         output=output_mint,
         amount=in_amount_raw,
         bps=slippage_bps,
+        fast=fast,
+        httpTimeout=http_timeout,
         priorityLevel=os.getenv("JUP_PRIORITY_LEVEL", "veryHigh"),
         maxLamports=os.getenv("JUP_MAX_PRIORITY_FEE_LAMPORTS", "1000000"),
     )
@@ -186,6 +198,7 @@ def jup_swap_exact_in(
         output_mint=output_mint,
         in_amount_raw=in_amount_raw,
         slippage_bps=slippage_bps,
+        timeout_sec=http_timeout,
     )
 
     last_error: Optional[Exception] = None
@@ -196,19 +209,18 @@ def jup_swap_exact_in(
             raw_tx = _jup_build_swap_tx(
                 quote_response=quote,
                 wrap_and_unwrap_sol=wrap_and_unwrap_sol,
+                timeout_sec=http_timeout if fast else 20.0,
             )
 
-            _log("SIMULATE", attempt=attempt)
-            sim = _simulate_tx(raw_tx, rpc_url)
-            if sim.get("err") is not None:
-                raise RuntimeError(f"Jupiter simulation error: {sim.get('err')}")
+            # AGGRESSIVE: NO SIMULATE (too slow)
+            _log("SIMULATE_SKIP", attempt=attempt, fast=fast)
 
             msg_bytes = to_bytes_versioned(raw_tx.message)
             signature = _wallet.sign_message(msg_bytes)
             signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
-            _log("SEND", attempt=attempt)
-            sig_str = _send_signed_tx(signed_tx, rpc_url)
+            _log("SEND", attempt=attempt, fast=fast)
+            sig_str = _send_signed_tx(signed_tx, rpc_url, fast_mode=fast)
             _log("OK", sig=sig_str, attempt=attempt)
             return sig_str, quote
 
@@ -220,4 +232,3 @@ def jup_swap_exact_in(
             break
 
     raise RuntimeError(f"Jupiter swap failed: {last_error}")
-

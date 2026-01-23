@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
 from app.db.session import SessionLocal
-from app.models import Call, StrategyResult
+from app.models import Call, Channel, StrategyResult
 
 from app.executors.jup_executor import SOL_MINT, jup_swap_exact_in
 from app.executors.raydium_executor import raydium_swap_exact_in
@@ -27,6 +27,10 @@ LIVE_STRATEGY_KEY = os.getenv("LIVE_STRATEGY_KEY", "tp35_sl20").strip()
 
 TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "5"))
 SELL_COOLDOWN_SEC = int(os.getenv("LIVE_SELL_COOLDOWN_SEC", "15"))
+
+# aggressive knobs
+LIVE_CONFIRM_MS = int(os.getenv("LIVE_CONFIRM_MS", "1200"))
+LIVE_FAST_MODE = os.getenv("LIVE_FAST_MODE", "1").strip() not in ("0", "false", "False")
 
 # Sell percent of *token balance* in wallet (0-100). Default 100 = sell all tokens.
 LIVE_SELL_PERCENT = float(os.getenv("LIVE_SELL_PERCENT", "100").strip().replace("%", ""))
@@ -39,6 +43,35 @@ RAYDIUM_MAX_BPS = int(os.getenv("LIVE_MAX_SLIPPAGE_BPS_RAYDIUM", os.getenv("RAYD
 SLIPPAGE_STEPS_BPS_RAYDIUM = sorted({min(int(x), RAYDIUM_MAX_BPS) for x in SLIPPAGE_STEPS_BPS if int(x) > 0})
 
 _last_sent: dict[int, float] = {}  # call_id -> ts
+
+
+def _get_sig_status(sig: str) -> str | None:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignatureStatuses",
+        "params": [[sig], {"searchTransactionHistory": False}],
+    }
+    r = requests.post(RPC_URL, json=payload, timeout=1.2)
+    r.raise_for_status()
+    jr = r.json()
+    v = (((jr.get("result") or {}).get("value")) or [None])[0]
+    if not v:
+        return None
+    return v.get("confirmationStatus") or None
+
+
+def _confirm_fast(sig: str, max_ms: int) -> bool:
+    deadline = time.time() + (max_ms / 1000.0)
+    while time.time() < deadline:
+        try:
+            st = _get_sig_status(sig)
+            if st in ("processed", "confirmed", "finalized"):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.10)
+    return False
 
 
 def _rpc(method: str, params: list[Any]) -> dict[str, Any]:
@@ -122,12 +155,15 @@ def _compute_sell_amount_raw(balance_raw: int) -> int:
 
 
 def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult]]:
-    c, sr = Call, StrategyResult
+    c, sr, ch = Call, StrategyResult, Channel
+
     stmt = (
         select(c, sr)
+        .join(ch, ch.id == c.channel_id)
         .join(sr, sr.call_id == c.id)
+        .where(ch.live_enabled == True)          # ✅ keep your condition
         .where(c.status == "DONE")
-        .where(c.live_sell_enabled == True)  # noqa: E712
+        .where(c.live_sell_enabled == True)
         .where(c.live_sell_status == "NONE")
         .where(sr.strategy_key == LIVE_STRATEGY_KEY)
         .order_by(c.started_at.asc())
@@ -185,7 +221,7 @@ def try_jupiter_sell(mint: str, in_amount_raw: int) -> str:
     for bps in SLIPPAGE_STEPS_BPS:
         try:
             print(
-                f"[TRADER_LIVE][JUP TRY] mint={mint[:8]}... bps={bps} in_amount_raw={in_amount_raw}",
+                f"[TRADER_LIVE][JUP TRY] mint={mint[:8]}... bps={bps} in_amount_raw={in_amount_raw} fast={LIVE_FAST_MODE}",
                 flush=True,
             )
             sig, _quote = jup_swap_exact_in(
@@ -194,6 +230,7 @@ def try_jupiter_sell(mint: str, in_amount_raw: int) -> str:
                 in_amount_raw=in_amount_raw,
                 slippage_bps=bps,
                 wrap_and_unwrap_sol=True,  # output is SOL => unwrap
+                fast_mode=LIVE_FAST_MODE,
             )
             return str(sig)
         except Exception as e:
@@ -213,7 +250,7 @@ def try_raydium_sell(mint: str, in_amount_raw: int) -> str:
     for bps in SLIPPAGE_STEPS_BPS_RAYDIUM:
         try:
             print(
-                f"[TRADER_LIVE][RAY TRY] mint={mint[:8]}... bps={bps} in_amount_raw={in_amount_raw}",
+                f"[TRADER_LIVE][RAY TRY] mint={mint[:8]}... bps={bps} in_amount_raw={in_amount_raw} fast={LIVE_FAST_MODE}",
                 flush=True,
             )
             sigs, _resp = raydium_swap_exact_in(
@@ -222,6 +259,7 @@ def try_raydium_sell(mint: str, in_amount_raw: int) -> str:
                 in_amount_raw=in_amount_raw,
                 slippage_bps=bps,
                 wrap_and_unwrap_sol=True,
+                fast_mode=LIVE_FAST_MODE,
             )
             return str(sigs[0]) if sigs else "RAYDIUM_NO_SIG"
         except Exception as e:
@@ -235,7 +273,8 @@ def try_raydium_sell(mint: str, in_amount_raw: int) -> str:
 async def loop() -> None:
     print(
         f"[TRADER_LIVE] starting | poll={TRADER_POLL_SEC}s cooldown={SELL_COOLDOWN_SEC}s "
-        f"strategy={LIVE_STRATEGY_KEY} sell_percent={LIVE_SELL_PERCENT} rpc={RPC_URL}",
+        f"strategy={LIVE_STRATEGY_KEY} sell_percent={LIVE_SELL_PERCENT} rpc={RPC_URL} "
+        f"| fast={LIVE_FAST_MODE} confirm_ms={LIVE_CONFIRM_MS}",
         flush=True,
     )
     print(f"[TRADER_LIVE] slippage_jup_bps={SLIPPAGE_STEPS_BPS}", flush=True)
@@ -285,22 +324,54 @@ async def loop() -> None:
                     jup_err: str | None = None
                     ray_err: str | None = None
 
+                    # 1) Jupiter (fast)
                     try:
                         tx = try_jupiter_sell(mint, sell_raw)
-                        _mark(db, call, status="SENT", reason=reason, method="JUPITER", tx=tx)
+                        ok = _confirm_fast(tx, LIVE_CONFIRM_MS)
+                        if ok:
+                            _mark(db, call, status="SENT", reason=reason, method="JUPITER", tx=tx)
+                            _last_sent[call.id] = now
+                            print(f"[TRADER_LIVE][JUP OK] call_id={call.id} tx={tx}", flush=True)
+                            continue
+
+                        _mark(
+                            db,
+                            call,
+                            status="FALLBACK_GMGN",
+                            reason=reason,
+                            method="JUP_TIMEOUT",
+                            err=f"JUP sig not seen within {LIVE_CONFIRM_MS}ms (tx={tx})",
+                        )
                         _last_sent[call.id] = now
-                        print(f"[TRADER_LIVE][JUP OK] call_id={call.id} tx={tx}", flush=True)
+                        print(f"[TRADER_LIVE][JUP TIMEOUT] call_id={call.id} -> FALLBACK_GMGN tx={tx}", flush=True)
                         continue
+
                     except Exception as e1:
                         jup_err = str(e1)[:700]
                         print(f"[TRADER_LIVE][JUP TOTAL FAIL] call_id={call.id} err={jup_err}", flush=True)
 
+                    # 2) Raydium (fast)
                     try:
                         tx = try_raydium_sell(mint, sell_raw)
-                        _mark(db, call, status="SENT", reason=reason, method="RAYDIUM", tx=tx)
+                        ok = (tx != "RAYDIUM_NO_SIG") and _confirm_fast(tx, LIVE_CONFIRM_MS)
+                        if ok:
+                            _mark(db, call, status="SENT", reason=reason, method="RAYDIUM", tx=tx)
+                            _last_sent[call.id] = now
+                            print(f"[TRADER_LIVE][RAY OK] call_id={call.id} tx={tx}", flush=True)
+                            continue
+
+                        _mark(
+                            db,
+                            call,
+                            status="FALLBACK_GMGN",
+                            reason=reason,
+                            method="RAY_TIMEOUT",
+                            err=f"RAY sig not seen within {LIVE_CONFIRM_MS}ms (tx={tx})",
+                        )
                         _last_sent[call.id] = now
-                        print(f"[TRADER_LIVE][RAY OK] call_id={call.id} tx={tx}", flush=True)
+                        print(f"[TRADER_LIVE][RAY TIMEOUT] call_id={call.id} -> FALLBACK_GMGN tx={tx}", flush=True)
                         continue
+
                     except Exception as e2:
                         ray_err = str(e2)[:700]
 

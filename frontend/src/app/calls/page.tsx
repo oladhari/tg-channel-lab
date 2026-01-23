@@ -1,12 +1,9 @@
 // frontend/src/app/calls/page.tsx
 import { getCalls } from "../../lib/api";
+import { gmgnSolanaTokenUrl } from "../../lib/links";
 
 function shortMint(m: string) {
   return `${m.slice(0, 6)}…${m.slice(-6)}`;
-}
-
-function dexscreenerUrl(mint: string) {
-  return `https://dexscreener.com/solana/${mint}`;
 }
 
 export default async function CallsPage() {
@@ -48,11 +45,11 @@ export default async function CallsPage() {
                     </a>
 
                     <a
-                      href={dexscreenerUrl(r.mint)}
+                      href={gmgnSolanaTokenUrl(r.mint)}
                       target="_blank"
                       rel="noreferrer"
                       style={{ textDecoration: "underline", color: "#444" }}
-                      title="Open Dexscreener"
+                      title="Open GMGN"
                     >
                       Dex
                     </a>

@@ -19,6 +19,10 @@ WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 
+# Aggressive knobs
+LIVE_FAST_MODE = os.getenv("LIVE_FAST_MODE", "1").strip() not in ("0", "false", "False")
+LIVE_HTTP_TIMEOUT_SEC = float(os.getenv("LIVE_HTTP_TIMEOUT_SEC", "0.8"))
+
 
 def _log(event: str, **fields) -> None:
     parts = " ".join([f"{k}={v}" for k, v in fields.items()])
@@ -149,7 +153,7 @@ def raydium_build_swap_txs(
     return out
 
 
-def _send_v0_txs(base64_txs: List[str], kp: Keypair, rpc_url: str | None = None) -> List[str]:
+def _send_v0_txs(base64_txs: List[str], kp: Keypair, rpc_url: str | None = None, *, fast_mode: bool) -> List[str]:
     client = _rpc_client(rpc_url)
     sigs: List[str] = []
 
@@ -158,10 +162,13 @@ def _send_v0_txs(base64_txs: List[str], kp: Keypair, rpc_url: str | None = None)
         vtx = VersionedTransaction.from_bytes(raw)
         vtx_signed = vtx.sign([kp])
 
-        _log("SEND_TX", idx=i, bytes=len(bytes(vtx_signed)))
+        _log("SEND_TX", idx=i, bytes=len(bytes(vtx_signed)), fast=fast_mode)
         resp = client.send_raw_transaction(
             bytes(vtx_signed),
-            opts={"skip_preflight": True, "max_retries": 3},
+            opts={
+                "skip_preflight": True if fast_mode else True,
+                "max_retries": 0 if fast_mode else 3,
+            },
         )
 
         if isinstance(resp, dict):
@@ -185,7 +192,11 @@ def raydium_swap_exact_in(
     wrap_and_unwrap_sol: bool = True,
     rpc_url: str | None = None,
     private_key: str | None = None,
+    fast_mode: bool | None = None,
 ) -> Tuple[List[str], dict[str, Any]]:
+    fast = LIVE_FAST_MODE if fast_mode is None else bool(fast_mode)
+    timeout = LIVE_HTTP_TIMEOUT_SEC if fast else 10.0
+
     kp = _load_keypair(private_key)
     owner = kp.pubkey()
 
@@ -207,6 +218,7 @@ def raydium_swap_exact_in(
         amount_raw=in_amount_raw,
         slippage_bps=slippage_bps,
         tx_version=txv,
+        timeout=max(1, int(timeout)),
     )
 
     txs_b64 = raydium_build_swap_txs(
@@ -217,8 +229,9 @@ def raydium_swap_exact_in(
         wrap_sol=is_input_sol,
         unwrap_sol=is_output_sol,
         tx_version=txv,
+        timeout=max(1, int(timeout)),
     )
 
-    sigs = _send_v0_txs(txs_b64, kp, rpc_url)
-    _log("OK", sigs=",".join(sigs))
+    sigs = _send_v0_txs(txs_b64, kp, rpc_url, fast_mode=fast)
+    _log("OK", sigs=",".join(sigs), fast=fast)
     return sigs, compute_resp

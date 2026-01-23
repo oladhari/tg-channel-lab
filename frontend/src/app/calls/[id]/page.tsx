@@ -1,10 +1,7 @@
 // frontend/src/app/calls/[id]/page.tsx
 import { getCall, getCallPrices } from "../../../lib/api";
 import PriceChart from "./PriceChart";
-
-function dexscreenerUrl(mint: string) {
-  return `https://dexscreener.com/solana/${mint}`;
-}
+import { gmgnSolanaTokenUrl } from "../../../lib/links";
 
 type Props = {
   params: any; // can be object OR Promise in some Next versions
@@ -51,11 +48,11 @@ export default async function CallDetailPage(props: Props) {
         <div>
           <b>Mint:</b>{" "}
           <a
-            href={dexscreenerUrl(call.mint)}
+            href={gmgnSolanaTokenUrl(call.mint)}
             target="_blank"
             rel="noreferrer"
             style={{ textDecoration: "underline", fontFamily: "monospace" }}
-            title="Open Dexscreener"
+            title="Open GMGN"
           >
             {call.mint}
           </a>
@@ -69,12 +66,12 @@ export default async function CallDetailPage(props: Props) {
             ← Back
           </a>
           <a
-            href={dexscreenerUrl(call.mint)}
+            href={gmgnSolanaTokenUrl(call.mint)}
             target="_blank"
             rel="noreferrer"
             style={{ textDecoration: "underline" }}
           >
-            Open Dexscreener
+            Open GMGN
           </a>
         </div>
       </div>
