@@ -106,3 +106,9 @@ class Call(Base):
 
     live_buy_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     live_buy_error: Mapped[str | None] = mapped_column(String(300), default=None)
+
+    truth_ohlcv_cache_items = relationship(
+        "TruthOhlcvCache",
+        back_populates="call",
+        cascade="all, delete-orphan",
+    )
