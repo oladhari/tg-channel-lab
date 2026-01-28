@@ -22,6 +22,9 @@ MAX_HOLD_SEC = 25 * 60  # 25 minutes
 SECONDS_LIMIT = 1000
 SECONDS_AGG = 1
 
+# Special strategy key that means: ONLY warm cache, do not touch StrategyResult
+CACHE_ONLY_KEY = "__cache_only__"
+
 
 @dataclass(frozen=True)
 class TruthEval:
@@ -114,10 +117,17 @@ def _ensure_seconds_cache(
     and store as ONE combined cache row.
     """
     from app.services.coingecko_onchain import BestPool
+
     pool = BestPool(dex_id=dex_id, pool_address=pool_address)
 
-    existing = get_cache(db, call_id=call.id, pool_address=pool_address, timeframe="second", aggregate=SECONDS_AGG)
-    if existing and existing.data_gz and existing.points >= 500:  # cheap sanity
+    existing = get_cache(
+        db,
+        call_id=call.id,
+        pool_address=pool_address,
+        timeframe="second",
+        aggregate=SECONDS_AGG,
+    )
+    if existing and existing.data_gz and not existing.error and existing.points >= 500:  # cheap sanity
         return existing
 
     target_ts = entry_unix + max_hold_sec
@@ -150,22 +160,25 @@ def _ensure_seconds_cache(
         chunk2_len = min(SECONDS_LIMIT, remaining)
 
         chunk2_before = target_ts + 1
-        # directly fetch (without overwriting c1), then merge and upsert once at end
-        rows2 = cg.fetch_ohlcv(
-            pool_address,
-            "second",
-            network="solana",
-            aggregate=SECONDS_AGG,
-            before_timestamp=chunk2_before,
-            limit=min(1000, chunk2_len + 1),  # <=1000
-            currency="usd",
-            token="base",
-            include_empty_intervals=True,
-        ) or []
+        rows2 = (
+            cg.fetch_ohlcv(
+                pool_address,
+                "second",
+                network="solana",
+                aggregate=SECONDS_AGG,
+                before_timestamp=chunk2_before,
+                limit=min(1000, chunk2_len + 1),  # <=1000
+                currency="usd",
+                token="base",
+                include_empty_intervals=True,
+            )
+            or []
+        )
         rows.extend(rows2)
 
         # merge into ONE final cache row (overwrite c1)
         from app.services.truth_cache import upsert_cache
+
         c_final = upsert_cache(
             db,
             call=call,
@@ -182,6 +195,50 @@ def _ensure_seconds_cache(
     return c1
 
 
+def _ensure_minute_cache(
+    db: Session,
+    *,
+    cg: CoinGeckoOnchainClient,
+    call: Call,
+    pool_address: str,
+    dex_id: str,
+    entry_unix: int,
+    max_hold_sec: int,
+) -> TruthOhlcvCache | None:
+    """
+    Ensure we have a cached minute series as fallback.
+    """
+    from app.services.coingecko_onchain import BestPool
+
+    pool = BestPool(dex_id=dex_id, pool_address=pool_address)
+
+    minute_cache = get_cache(
+        db,
+        call_id=call.id,
+        pool_address=pool_address,
+        timeframe="minute",
+        aggregate=1,
+    )
+    if minute_cache and minute_cache.data_gz and not minute_cache.error and minute_cache.points >= 5:
+        return minute_cache
+
+    before_ts = entry_unix + max_hold_sec + 120
+    mc = fetch_and_store(
+        db,
+        cg=cg,
+        call=call,
+        pool=pool,
+        entry_unix=entry_unix,
+        max_hold_sec=max_hold_sec,
+        timeframe="minute",
+        aggregate=1,
+        before_timestamp=before_ts,
+        limit=180,  # enough for 25 min
+        include_empty_intervals=True,
+    )
+    return mc
+
+
 def run_truth_job(
     *,
     strategy_key: str = "tp35_sl20",
@@ -191,10 +248,99 @@ def run_truth_job(
     prefer_seconds: bool = True,
     max_hold_sec: int = MAX_HOLD_SEC,
 ):
+    """
+    Two modes:
+
+    1) Normal mode (default):
+       - reads StrategyResult rows for strategy_key where truth_checked_at IS NULL
+       - fills truth_* fields based on cached/fetched OHLCV
+
+    2) Cache-only mode (strategy_key="__cache_only__"):
+       - iterates DONE calls (optionally filtered by channel)
+       - ONLY warms truth_ohlcv_cache (seconds preferred, minute fallback)
+       - does NOT read or write StrategyResult
+    """
     cg = CoinGeckoOnchainClient()
     t0 = time.time()
 
     with SessionLocal() as db:  # type: Session
+
+        # =========================================================
+        # MODE 2: CACHE ONLY
+        # =========================================================
+        if strategy_key == CACHE_ONLY_KEY:
+            cq = select(Call).where(Call.status == "DONE").order_by(Call.id.desc()).limit(limit)
+            if channel_key:
+                cq = cq.join(Channel, Channel.id == Call.channel_id).where(Channel.key == channel_key)
+
+            calls = list(db.execute(cq).scalars().all())
+
+            print(
+                f"[truth] CACHE_ONLY start channel={channel_key or 'ALL'} "
+                f"limit={limit} calls={len(calls)} max_hold={max_hold_sec}s prefer_seconds={prefer_seconds}"
+            )
+
+            ok = err = 0
+
+            for call in calls:
+                try:
+                    entry_unix = _to_unix(call.started_at)
+
+                    best_pool = cg.pick_best_pool_for_mint(call.mint, network="solana")
+                    if not best_pool:
+                        raise RuntimeError("no_pool_found")
+
+                    ohlcv: list[list[float]] = []
+
+                    if prefer_seconds:
+                        cache = _ensure_seconds_cache(
+                            db,
+                            cg=cg,
+                            call=call,
+                            pool_address=best_pool.pool_address,
+                            dex_id=best_pool.dex_id,
+                            entry_unix=entry_unix,
+                            max_hold_sec=max_hold_sec,
+                        )
+                        if cache and cache.data_gz and not cache.error:
+                            ohlcv = load_cached_series(db, cache)
+
+                    # fallback to minute cache warm
+                    if not ohlcv:
+                        mc = _ensure_minute_cache(
+                            db,
+                            cg=cg,
+                            call=call,
+                            pool_address=best_pool.pool_address,
+                            dex_id=best_pool.dex_id,
+                            entry_unix=entry_unix,
+                            max_hold_sec=max_hold_sec,
+                        )
+                        if mc and mc.data_gz and not mc.error:
+                            ohlcv = load_cached_series(db, mc)
+
+                    if not ohlcv:
+                        raise RuntimeError("ohlcv_empty")
+
+                    ok += 1
+                    print(
+                        f"[truth] CACHE_ONLY ok call={call.id} mint={call.mint} "
+                        f"pool={best_pool.dex_id}:{best_pool.pool_address[:8]}.. points={len(ohlcv)}"
+                    )
+                    time.sleep(sleep_s)
+
+                except Exception as e:
+                    err += 1
+                    print(f"[truth] CACHE_ONLY ERROR call={call.id} mint={call.mint} err={str(e)[:280]}")
+                    time.sleep(sleep_s)
+
+            dt = time.time() - t0
+            print(f"[truth] CACHE_ONLY done ok={ok} err={err} elapsed={dt:.2f}s")
+            return
+
+        # =========================================================
+        # MODE 1: NORMAL TRUTH EVAL (StrategyResult)
+        # =========================================================
         q = (
             select(StrategyResult, Call)
             .join(Call, Call.id == StrategyResult.call_id)
@@ -223,12 +369,10 @@ def run_truth_job(
                 tp_price = float(sr.entry_price_usd) * (1.0 + float(sr.tp_pct) / 100.0)
                 sl_price = float(sr.entry_price_usd) * (1.0 - float(sr.sl_pct) / 100.0)
 
-                # 1) resolve pool
                 best_pool = cg.pick_best_pool_for_mint(call.mint, network="solana")
                 if not best_pool:
                     raise RuntimeError("no_pool_found")
 
-                # 2) load from cache or fetch once
                 ohlcv: list[list[float]] = []
 
                 if prefer_seconds:
@@ -244,39 +388,22 @@ def run_truth_job(
                     if cache and cache.data_gz and not cache.error:
                         ohlcv = load_cached_series(db, cache)
 
-                # fallback to cached minute, else fetch minute and store
                 if not ohlcv:
-                    minute_cache = get_cache(
+                    mc = _ensure_minute_cache(
                         db,
-                        call_id=call.id,
+                        cg=cg,
+                        call=call,
                         pool_address=best_pool.pool_address,
-                        timeframe="minute",
-                        aggregate=1,
+                        dex_id=best_pool.dex_id,
+                        entry_unix=entry_unix,
+                        max_hold_sec=max_hold_sec,
                     )
-                    if minute_cache and minute_cache.data_gz and not minute_cache.error:
-                        ohlcv = load_cached_series(db, minute_cache)
-                    else:
-                        before_ts = entry_unix + max_hold_sec + 120
-                        mc = fetch_and_store(
-                            db,
-                            cg=cg,
-                            call=call,
-                            pool=best_pool,
-                            entry_unix=entry_unix,
-                            max_hold_sec=max_hold_sec,
-                            timeframe="minute",
-                            aggregate=1,
-                            before_timestamp=before_ts,
-                            limit=180,  # enough for 25 min
-                            include_empty_intervals=True,
-                        )
-                        if mc.data_gz and not mc.error:
-                            ohlcv = load_cached_series(db, mc)
+                    if mc and mc.data_gz and not mc.error:
+                        ohlcv = load_cached_series(db, mc)
 
                 if not ohlcv:
                     raise RuntimeError("ohlcv_empty")
 
-                # 3) evaluate over fixed window -> TIME_EXIT if no hit
                 ev = _evaluate_from_ohlcv(
                     ohlcv,
                     tp_price=tp_price,
@@ -326,7 +453,7 @@ def run_truth_job(
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("TG-Channel-Lab Truth Job")
     p.add_argument("--channel", dest="channel_key", default=None, help="channels.key (e.g. seekrtrending)")
-    p.add_argument("--strategy", dest="strategy_key", default="tp35_sl20", help="strategy_key")
+    p.add_argument("--strategy", dest="strategy_key", default="tp35_sl20", help="strategy_key or __cache_only__")
     p.add_argument("--limit", type=int, default=200, help="max rows to process")
     p.add_argument("--sleep", type=float, default=0.25, help="sleep between API calls")
     p.add_argument("--no-seconds", action="store_true", help="skip seconds OHLCV (use minute only)")

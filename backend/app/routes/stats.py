@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text, bindparam, String
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session, selectinload
 
 from app.settings import settings
@@ -301,3 +302,135 @@ def grid_simulation(
 
     finally:
         db.close()
+
+
+@router.get("/truth_paper", response_model=list[PaperStatsOut])
+def truth_paper_stats(
+    strategy_key: str = Query(default="tp35_sl20"),
+    start_balance_sol: float = Query(default=1.0, gt=0),
+    entry_sol: float = Query(default=0.1, gt=0),
+    channel_keys: str | None = Query(
+        default=None,
+        description="Optional comma-separated channels.key (e.g. seekrtrending,memesdontlies)",
+    ),
+):
+    """
+    Truth-based stats (TP/SL/TIME_EXIT) using strategy_results.truth_* fields.
+    Output matches PaperStatsOut so frontend can reuse the same table.
+
+    PnL rule:
+      - TP => +tp_pct
+      - SL => -sl_pct
+      - TIME_EXIT => (exit/entry - 1) * 100
+      - AMBIGUOUS/ERROR => skipped (not counted as trades)
+    Compounding rule:
+      balance *= (1 + (pnl_pct/100) * entry_sol)
+    """
+    keys: list[str] | None = None
+    if channel_keys:
+        keys = [k.strip() for k in channel_keys.split(",") if k.strip()]
+        if not keys:
+            keys = None
+
+    base_sql = """
+WITH truth_trades AS (
+  SELECT
+    c.id AS channel_id,
+    c.key AS channel_key,
+    c.telegram_username,
+    sr.strategy_key,
+    sr.truth_outcome,
+    sr.entry_price_usd,
+    sr.truth_exit_price_usd,
+    sr.tp_pct,
+    sr.sl_pct,
+    CASE
+      WHEN sr.truth_outcome = 'TP' THEN sr.tp_pct
+      WHEN sr.truth_outcome = 'SL' THEN -sr.sl_pct
+      WHEN sr.truth_outcome = 'TIME_EXIT'
+        AND sr.truth_exit_price_usd IS NOT NULL
+        AND sr.entry_price_usd > 0
+      THEN (sr.truth_exit_price_usd / sr.entry_price_usd - 1) * 100.0
+      ELSE NULL
+    END AS pnl_pct
+  FROM strategy_results sr
+  JOIN calls ca ON ca.id = sr.call_id
+  JOIN channels c ON c.id = ca.channel_id
+  WHERE sr.strategy_key = :strategy_key
+    AND ca.status = 'DONE'
+    AND sr.truth_checked_at IS NOT NULL
+    {keys_filter}
+),
+agg AS (
+  SELECT
+    channel_id,
+    channel_key,
+    telegram_username,
+    strategy_key,
+    COUNT(*) FILTER (WHERE pnl_pct IS NOT NULL) AS n_trades,
+    COUNT(*) FILTER (WHERE truth_outcome = 'TP') AS tp,
+    COUNT(*) FILTER (WHERE truth_outcome = 'SL') AS sl,
+    COUNT(*) FILTER (WHERE truth_outcome = 'TIME_EXIT') AS time,
+    AVG(pnl_pct) FILTER (WHERE pnl_pct IS NOT NULL) AS avg_pnl_pct,
+    SUM(LN(1 + (pnl_pct/100.0) * :entry_sol)) FILTER (WHERE pnl_pct IS NOT NULL) AS sum_ln
+  FROM truth_trades
+  GROUP BY channel_id, channel_key, telegram_username, strategy_key
+)
+SELECT
+  channel_id,
+  channel_key,
+  telegram_username,
+  strategy_key,
+  n_trades,
+  tp,
+  sl,
+  time,
+  CASE WHEN n_trades > 0 THEN ROUND(tp::numeric / n_trades * 100.0, 2) ELSE 0 END AS win_rate_tp_pct,
+  CASE WHEN avg_pnl_pct IS NOT NULL THEN ROUND(avg_pnl_pct::numeric, 2) ELSE 0 END AS avg_pnl_pct,
+  CASE
+    WHEN sum_ln IS NULL THEN :start_balance_sol
+    ELSE ROUND( (:start_balance_sol * EXP(sum_ln))::numeric, 6 )
+  END AS end_balance_sol
+FROM agg
+ORDER BY end_balance_sol DESC;
+"""
+
+    if keys:
+        sql = (
+            text(base_sql.format(keys_filter="AND c.key = ANY(:keys)"))
+            .bindparams(bindparam("keys", type_=ARRAY(String)))
+        )
+    else:
+        sql = text(base_sql.format(keys_filter=""))
+
+    params = {
+        "strategy_key": strategy_key,
+        "start_balance_sol": float(start_balance_sol),
+        "entry_sol": float(entry_sol),
+    }
+    if keys:
+        params["keys"] = keys
+
+    with SessionLocal() as db:  # type: Session
+        rows = db.execute(sql, params).mappings().all()
+
+    out: list[PaperStatsOut] = []
+    for r in rows:
+        out.append(
+            PaperStatsOut(
+                channel_id=int(r["channel_id"]),
+                key=str(r["channel_key"]),
+                telegram_username=str(r["telegram_username"] or ""),
+                strategy_key=str(r["strategy_key"]),
+                start_balance_sol=float(start_balance_sol),
+                end_balance_sol=float(r["end_balance_sol"]),
+                n_trades=int(r["n_trades"]),
+                tp=int(r["tp"]),
+                sl=int(r["sl"]),
+                time=int(r["time"]),
+                win_rate_tp_pct=float(r["win_rate_tp_pct"]),
+                avg_pnl_pct=float(r["avg_pnl_pct"]),
+            )
+        )
+
+    return out

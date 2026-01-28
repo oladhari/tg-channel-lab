@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,10 +20,24 @@ class CoinGeckoOnchainError(RuntimeError):
 
 class CoinGeckoOnchainClient:
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or os.getenv("COINGECKO_PRO_API_KEY") or os.getenv("CG_PRO_API_KEY")
+        # ✅ accept all common env names (your case: COINGECKO_API_KEY)
+        self.api_key = (
+            api_key
+            or os.getenv("COINGECKO_PRO_API_KEY")
+            or os.getenv("CG_PRO_API_KEY")
+            or os.getenv("COINGECKO_API_KEY")
+        )
+
         self.base_url = base_url or "https://pro-api.coingecko.com/api/v3/onchain"
         self.session = requests.Session()
-        self.session.headers.update({"x-cg-pro-api-key": self.api_key or ""})
+
+        # ✅ fail fast (so we never spam 401s again)
+        if not self.api_key:
+            raise CoinGeckoOnchainError(
+                "CoinGecko API key missing. Set one of: COINGECKO_PRO_API_KEY, CG_PRO_API_KEY, COINGECKO_API_KEY"
+            )
+
+        self.session.headers.update({"x-cg-pro-api-key": self.api_key})
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
@@ -34,14 +47,11 @@ class CoinGeckoOnchainClient:
         return r.json()
 
     def pick_best_pool_for_mint(self, mint: str, network: str = "solana") -> BestPool | None:
-        # your existing logic can stay — this is just placeholder signature.
-        # must return BestPool(dex_id=..., pool_address=...)
         data = self._get(f"/networks/{network}/tokens/{mint}/pools")
         pools = data.get("data") or []
         if not pools:
             return None
 
-        # Pick highest liquidity/reserve_in_usd when available
         best = None
         best_liq = -1.0
         for p in pools:
@@ -71,7 +81,6 @@ class CoinGeckoOnchainClient:
         token: str = "base",
         include_empty_intervals: bool = True,
     ) -> list[list[float]]:
-        # Hard safety:
         if limit < 1:
             limit = 1
         if limit > 1000:
@@ -82,7 +91,6 @@ class CoinGeckoOnchainClient:
             "limit": int(limit),
             "currency": currency,
             "token": token,
-            # CoinGecko requires lowercase true/false strings
             "include_empty_intervals": "true" if include_empty_intervals else "false",
         }
         if before_timestamp is not None:

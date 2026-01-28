@@ -39,6 +39,10 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+// =====================================================
+// Channels
+// =====================================================
+
 export type Channel = {
   id: number;
   key: string;
@@ -46,23 +50,8 @@ export type Channel = {
   enabled: boolean;
   live_enabled: boolean;
 
-  // ✅ NEW: per-channel live buy amount (SOL)
+  // per-channel live buy amount (SOL)
   live_buy_amount_sol: number | null;
-};
-
-export type PaperStat = {
-  channel_id: number;
-  key: string;
-  telegram_username: string;
-  strategy_key: string;
-  start_balance_sol: number;
-  end_balance_sol: number;
-  n_trades: number;
-  tp: number;
-  sl: number;
-  time: number;
-  win_rate_tp_pct: number;
-  avg_pnl_pct: number;
 };
 
 export function getChannels() {
@@ -74,8 +63,6 @@ export function createChannel(body: {
   telegram_username: string;
   enabled: boolean;
   live_enabled: boolean;
-
-  // ✅ NEW
   live_buy_amount_sol?: number | null;
 }) {
   return http<Channel>("/channels", { method: "POST", body: JSON.stringify(body) });
@@ -85,12 +72,12 @@ export function toggleChannelEnabled(id: number) {
   return http<Channel>(`/channels/${id}/toggle`, { method: "POST" });
 }
 
-// ✅ This is the ONLY correct endpoint for Live toggling
+// ONLY correct endpoint for Live toggling
 export function toggleChannelLive(id: number) {
   return http<Channel>(`/channels/${id}/toggle-live`, { method: "POST" });
 }
 
-// ✅ NEW: PATCH channel (generic updater)
+// PATCH channel
 export function updateChannel(
   id: number,
   body: Partial<{
@@ -103,12 +90,14 @@ export function updateChannel(
   return http<Channel>(`/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) });
 }
 
-// ✅ NEW: convenience setter
 export function setChannelLiveBuyAmount(id: number, amountSol: number | null) {
   return updateChannel(id, { live_buy_amount_sol: amountSol });
 }
 
-// --- Calls / stats ---
+// =====================================================
+// Calls / stats
+// =====================================================
+
 export type CallRow = {
   id: number;
   channel_id: number;
@@ -154,6 +143,21 @@ export type CallDetail = {
 
 export type PricePoint = { t_sec: number; price_usd: number };
 
+export type PaperStat = {
+  channel_id: number;
+  key: string;
+  telegram_username: string;
+  strategy_key: string;
+  start_balance_sol: number;
+  end_balance_sol: number;
+  n_trades: number;
+  tp: number;
+  sl: number;
+  time: number;
+  win_rate_tp_pct: number;
+  avg_pnl_pct: number;
+};
+
 export function getPaperStats(params?: {
   strategy_key?: string;
   start_balance_sol?: number;
@@ -172,6 +176,27 @@ export function getPaperStats(params?: {
   if (params?.channel_key) qs.set("channel_key", params.channel_key);
 
   return http<PaperStat[]>(`/stats/paper?${qs.toString()}`);
+}
+
+export function getTruthPaperStats(params?: {
+  strategy_key?: string;
+  start_balance_sol?: number;
+  entry_sol?: number;
+  channel_keys?: string; // csv: "a,b,c"
+}) {
+  const strategy_key = params?.strategy_key ?? "tp35_sl20";
+  const start_balance_sol = params?.start_balance_sol ?? 1.0;
+  const entry_sol = params?.entry_sol ?? 0.1;
+
+  const qs = new URLSearchParams({
+    strategy_key,
+    start_balance_sol: String(start_balance_sol),
+    entry_sol: String(entry_sol),
+  });
+
+  if (params?.channel_keys) qs.set("channel_keys", params.channel_keys);
+
+  return http<PaperStat[]>(`/stats/truth_paper?${qs.toString()}`);
 }
 
 export function getCalls(params?: {
@@ -199,7 +224,10 @@ export function getCallPrices(id: number) {
   return http<PricePoint[]>(`/calls/${id}/prices`);
 }
 
-// --- Live (read-only endpoints) ---
+// =====================================================
+// Live (read-only endpoints)
+// =====================================================
+
 export type LiveConfig = {
   gmgn_target_set: boolean;
   gmgn_target: string | null;
@@ -216,6 +244,10 @@ export function getLiveQueue(params?: { limit?: number }) {
   qs.set("limit", String(params?.limit ?? 200));
   return http<any[]>(`/live/queue?${qs.toString()}`);
 }
+
+// =====================================================
+// Grid simulation types (shared by /stats/grid and /truth/grid)
+// =====================================================
 
 export type GridCell = {
   tp_pct: number;
@@ -239,6 +271,7 @@ export type GridSim = {
   results: GridCell[];
 };
 
+// Existing (paper-price-points) grid
 export function getGridSim(params: {
   channel_key: string;
   tp_values?: string; // csv string
@@ -254,4 +287,28 @@ export function getGridSim(params: {
   if (params.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
 
   return http<GridSim>(`/stats/grid?${qs.toString()}`);
+}
+
+// NEW truth grid (cached CoinGecko OHLCV)
+export function getTruthGridSim(params: {
+  channel_key: string;
+  tp_values?: string; // CSV
+  sl_values?: string; // CSV
+  start_balance_sol?: number;
+  entry_sol?: number;
+  prefer_seconds?: boolean;
+  max_hold_sec?: number;
+}) {
+  const qs = new URLSearchParams();
+  qs.set("channel_key", params.channel_key);
+
+  qs.set("tp_values", params.tp_values ?? "35,40,45,50,55,60,65");
+  qs.set("sl_values", params.sl_values ?? "20,25,30,35,40,45,50");
+  qs.set("start_balance_sol", String(params.start_balance_sol ?? 1.0));
+  if (params.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
+
+  if (params.prefer_seconds != null) qs.set("prefer_seconds", String(params.prefer_seconds));
+  if (params.max_hold_sec != null) qs.set("max_hold_sec", String(params.max_hold_sec));
+
+  return http<GridSim>(`/truth/grid?${qs.toString()}`);
 }
