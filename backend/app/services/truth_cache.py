@@ -32,7 +32,7 @@ def decode_rows_gz(data_gz: bytes) -> list[list[float]]:
 
 
 def _minmax_ts(rows: list[list[float]]) -> tuple[int | None, int | None]:
-    ts = []
+    ts: list[int] = []
     for r in rows:
         if isinstance(r, list) and len(r) >= 1:
             try:
@@ -74,6 +74,11 @@ def upsert_cache(
     rows: list[list[float]] | None,
     error: str | None,
 ) -> TruthOhlcvCache:
+    """
+    IMPORTANT:
+    - This function does NOT commit.
+    - The caller should commit/rollback.
+    """
     existing = get_cache(
         db,
         call_id=call.id,
@@ -116,8 +121,8 @@ def upsert_cache(
         existing.end_ts = None
         existing.error = (error or "unknown_error")[:280]
 
-    db.commit()
-    db.refresh(existing)
+    # flush so ID is available if it was created
+    db.flush()
     return existing
 
 
@@ -135,6 +140,14 @@ def fetch_and_store(
     limit: int,
     include_empty_intervals: bool,
 ) -> TruthOhlcvCache:
+    """
+    Fetch OHLCV and upsert into truth_ohlcv_cache.
+
+    IMPORTANT:
+    - Does NOT commit.
+    - On fetch failure, it rolls back any pending DB state for safety,
+      then writes an error cache row (and flushes).
+    """
     try:
         rows = cg.fetch_ohlcv(
             pool.pool_address,
@@ -159,10 +172,16 @@ def fetch_and_store(
             error=None,
         )
     except Exception as e:
+        # if anything exploded mid-transaction, keep session usable
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
         return upsert_cache(
             db,
             call=call,
-            pool=call and pool,
+            pool=pool,
             timeframe=timeframe,
             aggregate=aggregate,
             entry_unix=entry_unix,

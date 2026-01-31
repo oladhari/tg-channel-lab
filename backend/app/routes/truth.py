@@ -8,6 +8,9 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import SessionLocal
+from app.db.session import session_scope
+# remove SessionLocal import usage in this file
+
 from app.models import Call, StrategyResult, Channel, TruthOhlcvCache
 from app.schemas.stats import GridSimOut, GridCellOut  # reuse same schema as /stats/grid
 from app.settings import settings
@@ -188,7 +191,7 @@ def truth_pending(
     channel_key: str | None = Query(default=None),
     strategy_key: str = Query(default="tp35_sl20"),
 ):
-    with SessionLocal() as db:  # type: Session
+    with session_scope() as db:
         q = (
             select(func.count())
             .select_from(StrategyResult)
@@ -214,7 +217,7 @@ def truth_cache_status(
     channel_key: str | None = Query(default=None),
     timeframe: str = Query(default="second"),  # "second"|"minute"
 ):
-    with SessionLocal() as db:  # type: Session
+    with session_scope() as db:
         base = (
             select(
                 func.count().label("total_calls"),
@@ -341,7 +344,7 @@ def truth_grid_simulation(
 
     cg = CoinGeckoOnchainClient()
 
-    with SessionLocal() as db:  # type: Session
+    with session_scope() as db:
         ch = db.execute(select(Channel).where(Channel.key == channel_key)).scalar_one_or_none()
         if not ch:
             raise HTTPException(status_code=404, detail="Channel not found")

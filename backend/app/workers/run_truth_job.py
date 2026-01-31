@@ -9,6 +9,7 @@ from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.session import SessionLocal
 from app.models import Call, StrategyResult, Channel, TruthOhlcvCache
@@ -127,7 +128,7 @@ def _ensure_seconds_cache(
         timeframe="second",
         aggregate=SECONDS_AGG,
     )
-    if existing and existing.data_gz and not existing.error and existing.points >= 500:  # cheap sanity
+    if existing and existing.data_gz and not existing.error and (existing.points or 0) >= 500:
         return existing
 
     target_ts = entry_unix + max_hold_sec
@@ -149,6 +150,8 @@ def _ensure_seconds_cache(
         limit=min(1000, chunk1_len + 1),  # <=1000
         include_empty_intervals=True,
     )
+    if c1 is None:
+        return None
     if c1.error:
         return c1
 
@@ -219,7 +222,7 @@ def _ensure_minute_cache(
         timeframe="minute",
         aggregate=1,
     )
-    if minute_cache and minute_cache.data_gz and not minute_cache.error and minute_cache.points >= 5:
+    if minute_cache and minute_cache.data_gz and not minute_cache.error and (minute_cache.points or 0) >= 5:
         return minute_cache
 
     before_ts = entry_unix + max_hold_sec + 120
@@ -330,6 +333,13 @@ def run_truth_job(
                     time.sleep(sleep_s)
 
                 except Exception as e:
+                    # 🔥 CRITICAL: if an exception happens, the transaction may be invalid.
+                    # Always rollback so the Session can be reused.
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+
                     err += 1
                     print(f"[truth] CACHE_ONLY ERROR call={call.id} mint={call.mint} err={str(e)[:280]}")
                     time.sleep(sleep_s)
@@ -436,11 +446,25 @@ def run_truth_job(
                 time.sleep(sleep_s)
 
             except Exception as e:
+                # 🔥 CRITICAL: rollback first, otherwise session becomes unusable
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
                 sr.truth_outcome = "ERROR"
                 sr.truth_error = str(e)[:280]
                 sr.truth_source = "coingecko_onchain"
                 sr.truth_checked_at = datetime.now(timezone.utc)
-                db.commit()
+
+                # Commit the error state, but don't let commit failure crash the loop
+                try:
+                    db.commit()
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
 
                 err += 1
                 print(f"[truth] ERROR sr={sr.id} call={call.id} mint={call.mint} err={sr.truth_error}")
