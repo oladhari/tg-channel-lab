@@ -29,7 +29,7 @@ TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "5"))
 SELL_COOLDOWN_SEC = int(os.getenv("LIVE_SELL_COOLDOWN_SEC", "15"))
 
 # aggressive knobs
-LIVE_CONFIRM_MS = int(os.getenv("LIVE_CONFIRM_MS", "1200"))
+LIVE_CONFIRM_MS = int(os.getenv("LIVE_CONFIRM_MS", "5000"))
 LIVE_FAST_MODE = os.getenv("LIVE_FAST_MODE", "1").strip() not in ("0", "false", "False")
 
 # Sell percent of *token balance* in wallet (0-100). Default 100 = sell all tokens.

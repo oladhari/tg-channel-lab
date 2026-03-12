@@ -25,7 +25,11 @@ MAX_SEND_RETRIES = int(os.getenv("JUP_MAX_SEND_RETRIES", "3"))
 
 # Aggressive knobs (used by workers too)
 LIVE_FAST_MODE = os.getenv("LIVE_FAST_MODE", "1").strip() not in ("0", "false", "False")
-LIVE_HTTP_TIMEOUT_SEC = float(os.getenv("LIVE_HTTP_TIMEOUT_SEC", "0.8"))
+# Jupiter API (quote + build) takes 1-3s — enforce a safe minimum of 5s.
+# LIVE_HTTP_TIMEOUT_SEC kept for backwards compatibility but clamped.
+LIVE_HTTP_TIMEOUT_SEC = max(float(os.getenv("LIVE_HTTP_TIMEOUT_SEC", "5.0")), 5.0)
+JUP_QUOTE_TIMEOUT_SEC = float(os.getenv("JUP_QUOTE_TIMEOUT_SEC", str(LIVE_HTTP_TIMEOUT_SEC)))
+JUP_BUILD_TIMEOUT_SEC = float(os.getenv("JUP_BUILD_TIMEOUT_SEC", str(max(LIVE_HTTP_TIMEOUT_SEC, 8.0))))
 
 
 def _log(event: str, **fields) -> None:
@@ -58,8 +62,19 @@ def _load_keypair(private_key: str | None = None) -> Keypair:
         raise ValueError(f"Invalid SOLANA_PRIVATE_KEY format: {e}")
 
 
-_wallet = _load_keypair()
-_WALLET_PUBKEY_STR = str(_wallet.pubkey())
+# Lazy-loaded at first swap call — avoids crashing containers that don't use Solana keys
+_wallet: Keypair | None = None
+_WALLET_PUBKEY_STR: str = ""
+
+
+def _ensure_wallet(private_key: str | None = None) -> None:
+    global _wallet, _WALLET_PUBKEY_STR
+    if private_key:
+        _wallet = _load_keypair(private_key)
+        _WALLET_PUBKEY_STR = str(_wallet.pubkey())
+    elif _wallet is None:
+        _wallet = _load_keypair()
+        _WALLET_PUBKEY_STR = str(_wallet.pubkey())
 
 
 def _rpc_call(method: str, params: list, rpc_url: str, timeout_sec: float = 30.0) -> Dict[str, Any]:
@@ -174,12 +189,10 @@ def jup_swap_exact_in(
         raise RuntimeError("SOLANA_RPC_URL is missing")
 
     fast = LIVE_FAST_MODE if fast_mode is None else bool(fast_mode)
-    http_timeout = LIVE_HTTP_TIMEOUT_SEC if fast else 12.0
+    quote_timeout = JUP_QUOTE_TIMEOUT_SEC if fast else 12.0
+    build_timeout = JUP_BUILD_TIMEOUT_SEC if fast else 20.0
 
-    global _wallet, _WALLET_PUBKEY_STR
-    if private_key:
-        _wallet = _load_keypair(private_key)
-        _WALLET_PUBKEY_STR = str(_wallet.pubkey())
+    _ensure_wallet(private_key)
 
     _log(
         "START",
@@ -188,7 +201,8 @@ def jup_swap_exact_in(
         amount=in_amount_raw,
         bps=slippage_bps,
         fast=fast,
-        httpTimeout=http_timeout,
+        quoteTimeout=quote_timeout,
+        buildTimeout=build_timeout,
         priorityLevel=os.getenv("JUP_PRIORITY_LEVEL", "veryHigh"),
         maxLamports=os.getenv("JUP_MAX_PRIORITY_FEE_LAMPORTS", "1000000"),
     )
@@ -198,7 +212,7 @@ def jup_swap_exact_in(
         output_mint=output_mint,
         in_amount_raw=in_amount_raw,
         slippage_bps=slippage_bps,
-        timeout_sec=http_timeout,
+        timeout_sec=quote_timeout,
     )
 
     last_error: Optional[Exception] = None
@@ -209,12 +223,13 @@ def jup_swap_exact_in(
             raw_tx = _jup_build_swap_tx(
                 quote_response=quote,
                 wrap_and_unwrap_sol=wrap_and_unwrap_sol,
-                timeout_sec=http_timeout if fast else 20.0,
+                timeout_sec=build_timeout,
             )
 
             # AGGRESSIVE: NO SIMULATE (too slow)
             _log("SIMULATE_SKIP", attempt=attempt, fast=fast)
 
+            assert _wallet is not None, "Wallet not loaded"
             msg_bytes = to_bytes_versioned(raw_tx.message)
             signature = _wallet.sign_message(msg_bytes)
             signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])

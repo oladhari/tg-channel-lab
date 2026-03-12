@@ -10,6 +10,7 @@ import requests
 import base58
 
 from solana.rpc.api import Client as SolClient
+from solana.rpc.types import TxOpts
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -21,7 +22,8 @@ TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5
 
 # Aggressive knobs
 LIVE_FAST_MODE = os.getenv("LIVE_FAST_MODE", "1").strip() not in ("0", "false", "False")
-LIVE_HTTP_TIMEOUT_SEC = float(os.getenv("LIVE_HTTP_TIMEOUT_SEC", "0.8"))
+# Raydium compute/build API takes 1-3s — enforce a safe minimum of 5s.
+LIVE_HTTP_TIMEOUT_SEC = max(float(os.getenv("LIVE_HTTP_TIMEOUT_SEC", "5.0")), 5.0)
 
 
 def _log(event: str, **fields) -> None:
@@ -165,10 +167,10 @@ def _send_v0_txs(base64_txs: List[str], kp: Keypair, rpc_url: str | None = None,
         _log("SEND_TX", idx=i, bytes=len(bytes(vtx_signed)), fast=fast_mode)
         resp = client.send_raw_transaction(
             bytes(vtx_signed),
-            opts={
-                "skip_preflight": True if fast_mode else True,
-                "max_retries": 0 if fast_mode else 3,
-            },
+            opts=TxOpts(
+                skip_preflight=True,
+                max_retries=0 if fast_mode else 3,
+            ),
         )
 
         if isinstance(resp, dict):

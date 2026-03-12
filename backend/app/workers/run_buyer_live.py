@@ -25,7 +25,7 @@ BUY_COOLDOWN_SEC = int(os.getenv("LIVE_BUY_COOLDOWN_SEC", "15"))
 
 # aggressive knobs
 RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
-LIVE_CONFIRM_MS = int(os.getenv("LIVE_CONFIRM_MS", "1200"))
+LIVE_CONFIRM_MS = int(os.getenv("LIVE_CONFIRM_MS", "5000"))
 LIVE_FAST_MODE = os.getenv("LIVE_FAST_MODE", "1").strip() not in ("0", "false", "False")
 
 # slippage ladder (bps)
