@@ -45,9 +45,9 @@ export type Channel = {
   telegram_username: string;
   enabled: boolean;
   live_enabled: boolean;
-
-  // ✅ NEW: per-channel live buy amount (SOL)
   live_buy_amount_sol: number | null;
+  live_tp_pct: number | null;
+  live_sl_pct: number | null;
 };
 
 export type PaperStat = {
@@ -98,6 +98,8 @@ export function updateChannel(
     live_enabled: boolean;
     telegram_username: string;
     live_buy_amount_sol: number | null;
+    live_tp_pct: number | null;
+    live_sl_pct: number | null;
   }>
 ) {
   return http<Channel>(`/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -241,10 +243,11 @@ export type GridSim = {
 
 export function getGridSim(params: {
   channel_key: string;
-  tp_values?: string; // csv string
-  sl_values?: string; // csv string
+  tp_values?: string;
+  sl_values?: string;
   start_balance_sol?: number;
   entry_sol?: number;
+  accurate?: boolean;
 }) {
   const qs = new URLSearchParams();
   qs.set("channel_key", params.channel_key);
@@ -253,5 +256,6 @@ export function getGridSim(params: {
   qs.set("start_balance_sol", String(params.start_balance_sol ?? 1.0));
   if (params.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
 
-  return http<GridSim>(`/stats/grid?${qs.toString()}`);
+  const endpoint = params.accurate ? "/stats/accurate-grid" : "/stats/grid";
+  return http<GridSim>(`${endpoint}?${qs.toString()}`);
 }

@@ -21,9 +21,23 @@ from app.models import Call, Channel, StrategyResult
 
 from app.executors.jup_executor import SOL_MINT, jup_swap_exact_in
 from app.executors.raydium_executor import raydium_swap_exact_in
+from app.executors.jito_executor import jup_swap_jito, confirm_bundle
+
+USE_JITO = os.getenv("USE_JITO", "1").strip() not in ("0", "false", "False")
 
 RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
+# Global fallback — used when a channel has no per-channel TP/SL set
 LIVE_STRATEGY_KEY = os.getenv("LIVE_STRATEGY_KEY", "tp35_sl20").strip()
+
+
+def _channel_strategy_key(ch: Channel) -> str:
+    """Per-channel TP/SL if set, otherwise global LIVE_STRATEGY_KEY."""
+    tp = getattr(ch, "live_tp_pct", None)
+    sl = getattr(ch, "live_sl_pct", None)
+    if tp is not None and sl is not None:
+        return f"tp{int(tp)}_sl{int(sl)}"
+    return LIVE_STRATEGY_KEY
+
 
 TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "5"))
 SELL_COOLDOWN_SEC = int(os.getenv("LIVE_SELL_COOLDOWN_SEC", "15"))
@@ -154,22 +168,36 @@ def _compute_sell_amount_raw(balance_raw: int) -> int:
     return int(balance_raw * (pct / 100.0))
 
 
-def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult]]:
+def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
     c, sr, ch = Call, StrategyResult, Channel
 
+    # Fetch all DONE calls waiting to be sold, with ALL their strategy results.
+    # We filter by the correct per-channel strategy key in Python below.
     stmt = (
-        select(c, sr)
+        select(c, sr, ch)
         .join(ch, ch.id == c.channel_id)
         .join(sr, sr.call_id == c.id)
-        .where(ch.live_enabled == True)          # ✅ keep your condition
+        .where(ch.live_enabled == True)
         .where(c.status == "DONE")
         .where(c.live_sell_enabled == True)
         .where(c.live_sell_status == "NONE")
-        .where(sr.strategy_key == LIVE_STRATEGY_KEY)
         .order_by(c.started_at.asc())
-        .limit(50)
+        .limit(200)
     )
-    return list(db.execute(stmt).all())
+    all_rows = list(db.execute(stmt).all())
+
+    # Keep only rows where the strategy result matches the channel's effective TP/SL
+    result = []
+    seen_call_ids: set[int] = set()
+    for call, strat, channel in all_rows:
+        if call.id in seen_call_ids:
+            continue
+        key = _channel_strategy_key(channel)
+        if strat.strategy_key == key:
+            result.append((call, strat, channel))
+            seen_call_ids.add(call.id)
+
+    return result[:50]
 
 
 async def open_db_retry(max_wait_sec: int = 60) -> Session:
@@ -209,6 +237,32 @@ def _mark(
 
     db.add(call)
     db.commit()
+
+
+def try_jito_sell(mint: str, in_amount_raw: int) -> str:
+    """Submit a TOKEN -> SOL swap as a Jito bundle. Returns bundle_id."""
+    last_err: Exception | None = None
+
+    for bps in SLIPPAGE_STEPS_BPS:
+        try:
+            print(
+                f"[TRADER_LIVE][JITO TRY] mint={mint[:8]}... bps={bps} in_amount_raw={in_amount_raw}",
+                flush=True,
+            )
+            bundle_id, _quote = jup_swap_jito(
+                input_mint=mint,
+                output_mint=SOL_MINT,
+                in_amount_raw=in_amount_raw,
+                slippage_bps=bps,
+                wrap_and_unwrap_sol=True,
+            )
+            return str(bundle_id)
+        except Exception as e:
+            last_err = e
+            print(f"[TRADER_LIVE][JITO FAIL] mint={mint[:8]}... bps={bps} err={str(e)[:500]}", flush=True)
+            continue
+
+    raise RuntimeError(f"Jito sell failed: {last_err}")
 
 
 def try_jupiter_sell(mint: str, in_amount_raw: int) -> str:
@@ -287,7 +341,7 @@ async def loop() -> None:
         try:
             rows = pick_ready_rows(db)
 
-            for call, sr in rows:
+            for call, sr, channel in rows:
                 now = time.time()
                 last = _last_sent.get(call.id, 0.0)
                 if now - last < SELL_COOLDOWN_SEC:
@@ -295,6 +349,8 @@ async def loop() -> None:
 
                 reason = (sr.outcome or "").upper()  # TP|SL|TIME
                 mint = call.mint
+                effective_key = _channel_strategy_key(channel)
+                print(f"[TRADER_LIVE][STRATEGY] call_id={call.id} strategy={effective_key}", flush=True)
 
                 try:
                     bal_raw = _get_token_balance_raw(owner_pk, mint)
@@ -321,10 +377,30 @@ async def loop() -> None:
                         print(f"[TRADER_LIVE][NO BALANCE] call_id={call.id} -> FALLBACK_GMGN", flush=True)
                         continue
 
+                    jito_err: str | None = None
                     jup_err: str | None = None
                     ray_err: str | None = None
 
-                    # 1) Jupiter (fast)
+                    # 1) Jito bundle (fastest — ~400ms landing)
+                    if USE_JITO:
+                        try:
+                            bundle_id = try_jito_sell(mint, sell_raw)
+                            jito_confirm = confirm_bundle(bundle_id, timeout_sec=8.0)
+                            if jito_confirm in ("confirmed", "finalized"):
+                                _mark(db, call, status="SENT", reason=reason, method="JITO", tx=bundle_id)
+                                _last_sent[call.id] = now
+                                print(f"[TRADER_LIVE][JITO OK] call_id={call.id} bundle={bundle_id} status={jito_confirm}", flush=True)
+                                continue
+                            elif jito_confirm == "failed":
+                                jito_err = f"Jito bundle failed on-chain (bundle={bundle_id})"
+                            else:
+                                jito_err = f"Jito bundle dropped/timeout (bundle={bundle_id})"
+                            print(f"[TRADER_LIVE][JITO NO CONFIRM] call_id={call.id} {jito_err} -> fallback Jupiter", flush=True)
+                        except Exception as ej:
+                            jito_err = str(ej)[:700]
+                            print(f"[TRADER_LIVE][JITO TOTAL FAIL] call_id={call.id} err={jito_err} -> fallback Jupiter", flush=True)
+
+                    # 2) Jupiter (fast, direct RPC)
                     try:
                         tx = try_jupiter_sell(mint, sell_raw)
                         ok = _confirm_fast(tx, LIVE_CONFIRM_MS)
@@ -350,7 +426,7 @@ async def loop() -> None:
                         jup_err = str(e1)[:700]
                         print(f"[TRADER_LIVE][JUP TOTAL FAIL] call_id={call.id} err={jup_err}", flush=True)
 
-                    # 2) Raydium (fast)
+                    # 3) Raydium (fast)
                     try:
                         tx = try_raydium_sell(mint, sell_raw)
                         ok = (tx != "RAYDIUM_NO_SIG") and _confirm_fast(tx, LIVE_CONFIRM_MS)
@@ -375,7 +451,7 @@ async def loop() -> None:
                     except Exception as e2:
                         ray_err = str(e2)[:700]
 
-                    combined = f"JUPITER: {jup_err} | RAYDIUM: {ray_err}"
+                    combined = f"JITO: {jito_err} | JUPITER: {jup_err} | RAYDIUM: {ray_err}"
                     _mark(db, call, status="FALLBACK_GMGN", reason=reason, method="AUTO_FAIL", err=combined[:900])
                     _last_sent[call.id] = now
                     print(f"[TRADER_LIVE][AUTO FAIL] call_id={call.id} -> FALLBACK_GMGN", flush=True)

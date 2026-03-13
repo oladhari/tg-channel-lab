@@ -42,7 +42,7 @@ try:
 except BlockingIOError:
     raise SystemExit(f"[LOCK] Session already in use: {SESSION_PATH}")
 
-client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELELEGRAM_API_HASH := TELEGRAM_API_HASH, receive_updates=False)
+client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, receive_updates=False)
 
 _last_sent: dict[int, float] = {}  # call_id -> ts
 

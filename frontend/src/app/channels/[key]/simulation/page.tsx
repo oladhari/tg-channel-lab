@@ -18,6 +18,7 @@ export default function ChannelSimulationPage() {
   const [start, setStart] = useState(1.0);
   const [entry, setEntry] = useState(0.1);
 
+  const [accurate, setAccurate] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [data, setData] = useState<GridSim | null>(null);
@@ -34,6 +35,7 @@ export default function ChannelSimulationPage() {
         sl_values: slValues,
         start_balance_sol: start,
         entry_sol: entry,
+        accurate,
       });
       setData(res);
     } catch (e: any) {
@@ -105,6 +107,17 @@ export default function ChannelSimulationPage() {
             />
           </label>
         </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+          <input
+            type="checkbox"
+            checked={accurate}
+            onChange={(e) => setAccurate(e.target.checked)}
+          />
+          <span style={{ fontSize: 13 }}>
+            Accurate mode (GeckoTerminal OHLCV candles — slower but precise)
+          </span>
+        </label>
 
         <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
           <button onClick={run} disabled={loading}>

@@ -14,6 +14,10 @@ from app.models import Call, PricePoint, StrategyResult
 DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/"
 SOL_CHAIN_ID = "solana"
 
+# Jupiter price API — free, no rate limit stated, used as fallback
+JUP_PRICE_URL = "https://lite-api.jup.ag/price/v2"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
 # Recording settings
 RECORD_DURATION_SEC = int(os.getenv("RECORD_DURATION_SEC", "1500"))
 
@@ -33,34 +37,55 @@ TP_MULT = 1.0 + TP_PCT / 100.0
 SL_MULT = 1.0 - SL_PCT / 100.0
 
 
-def fetch_price_usd(mint: str) -> float | None:
-    """
-    Fetch token price in USD from Dexscreener.
-    Prefer Solana pairs, fallback to any pair with priceUsd.
-    """
+def _fetch_price_dexscreener(mint: str) -> float | None:
+    """Fetch token price in USD from Dexscreener."""
     try:
         r = requests.get(f"{DEX_TOKEN_URL}{mint}", timeout=8)
         if r.status_code != 200:
             return None
-
-        j = r.json()
-        pairs = j.get("pairs") or []
-        if not pairs:
-            return None
-
-        # Prefer Solana pair first
+        pairs = r.json().get("pairs") or []
+        # Prefer Solana pair
         for p in pairs:
             if p.get("chainId") == SOL_CHAIN_ID and p.get("priceUsd") is not None:
                 return float(p["priceUsd"])
-
-        # Fallback: any pair
+        # Any pair
         for p in pairs:
             if p.get("priceUsd") is not None:
                 return float(p["priceUsd"])
-
         return None
     except Exception:
         return None
+
+
+def _fetch_price_jupiter(mint: str) -> float | None:
+    """Fetch token price in USD from Jupiter Price API v2 (fallback)."""
+    try:
+        r = requests.get(
+            JUP_PRICE_URL,
+            params={"ids": mint, "vsToken": USDC_MINT},
+            timeout=6,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json().get("data") or {}
+        item = data.get(mint)
+        if item and item.get("price") is not None:
+            return float(item["price"])
+        return None
+    except Exception:
+        return None
+
+
+def fetch_price_usd(mint: str) -> float | None:
+    """
+    Fetch token price in USD.
+    Tries Dexscreener first, falls back to Jupiter Price API.
+    """
+    px = _fetch_price_dexscreener(mint)
+    if px is not None:
+        return px
+    # Dexscreener failed or returned no data — try Jupiter
+    return _fetch_price_jupiter(mint)
 
 
 def compute_display_result(

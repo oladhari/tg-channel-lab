@@ -19,6 +19,10 @@ class Channel(Base):
     live_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # ✅ NEW: default small amount for safe testing
     live_buy_amount_sol: Mapped[float] = mapped_column(Float, default=0.005)
+
+    # Per-channel TP/SL for live trading. NULL = use global LIVE_STRATEGY_KEY env var.
+    live_tp_pct: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    live_sl_pct: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
     calls = relationship("Call", back_populates="channel", cascade="all, delete-orphan")

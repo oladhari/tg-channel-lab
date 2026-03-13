@@ -61,10 +61,14 @@ export default async function ChannelPage(props: {
         <a href="/" style={{ textDecoration: "underline" }}>← Back to dashboard</a>{" "}
         <span style={{ margin: "0 8px", color: "#bbb" }}>|</span>
         <a href={`/channels/${channelKey}/simulation`} style={{ textDecoration: "underline" }}>
-          Open Simulation
+          Simulation
         </a>
         <span style={{ margin: "0 8px", color: "#bbb" }}>|</span>
-        <a href="/calls" style={{ textDecoration: "underline" }}>Open Calls Explorer</a>
+        <a href={`/channels/${channelKey}/settings`} style={{ textDecoration: "underline" }}>
+          ⚙ Live Settings
+        </a>
+        <span style={{ margin: "0 8px", color: "#bbb" }}>|</span>
+        <a href="/calls" style={{ textDecoration: "underline" }}>Calls Explorer</a>
       </p>
 
       <h1 style={{ marginBottom: 8 }}>Channel: {channelKey || "(missing key!)"}</h1>

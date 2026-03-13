@@ -26,6 +26,12 @@ services:
     volumes:
       - ./backend/alembic/versions:/app/alembic/versions
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/channels')\" 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   # ✅ PROD frontend (stable)
   frontend:
@@ -93,18 +99,19 @@ services:
     env_file: .env
     command: ["python", "-m", "app.workers.run_trader_gmgn"]
     depends_on:
-      db:
+      api:
         condition: service_healthy
     volumes:
       - ./sessions:/app/sessions
     restart: unless-stopped
 
   trader-live:
+    profiles: ["live"]   # disabled until SOLANA_PRIVATE_KEY is set
     build: ./backend
     env_file: .env
     command: ["python", "-m", "app.workers.run_trader_live"]
     depends_on:
-      db:
+      api:
         condition: service_healthy
     restart: unless-stopped
 
@@ -113,17 +120,19 @@ services:
     env_file: .env
     command: ["python", "-m", "app.workers.run_buyer_gmgn"]
     depends_on:
-      - db
+      api:
+        condition: service_healthy
     volumes:
       - ./sessions:/app/sessions
     restart: unless-stopped
 
   buyer-live:
+    profiles: ["live"]   # disabled until SOLANA_PRIVATE_KEY is set
     build: ./backend
     env_file: .env
     command: ["python", "-m", "app.workers.run_buyer_live"]
     depends_on:
-      db:
+      api:
         condition: service_healthy
     restart: unless-stopped
 
