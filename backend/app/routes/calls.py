@@ -48,6 +48,16 @@ def list_calls(
                 sr.pnl_pct,
                 sr.exit_t_sec,
                 sr.exit_price_usd,
+                # Live buy
+                c.live_buy_status,
+                c.live_buy_sent_at,
+                c.live_buy_amount_sol,
+                c.live_buy_error,
+                # Live sell
+                c.live_sell_status,
+                c.live_sell_reason,
+                c.live_sell_sent_at,
+                c.live_sell_error,
             )
             .join(ch, ch.id == c.channel_id)
             .outerjoin(sr, (sr.call_id == c.id) & (sr.strategy_key == strategy_key))
@@ -91,11 +101,36 @@ def get_call(call_id: int):
             "channel_key": channel_key,
             "mint": call.mint,
             "symbol": call.symbol,
+            "raw_message": call.raw_message,
             "status": call.status,
             "started_at": call.started_at,
             "duration_sec": call.duration_sec,
             "entry_price_usd": call.entry_price_usd,
             "ignore_reason": call.ignore_reason,
+            # Snapshot fields
+            "snapshot_at": call.snapshot_at,
+            "dex_id": call.dex_id,
+            "pair_created_at_ms": call.pair_created_at_ms,
+            "liquidity_usd": call.liquidity_usd,
+            "market_cap": call.market_cap,
+            "vol_m5": call.vol_m5,
+            "vol_h1": call.vol_h1,
+            "pc_m5": call.pc_m5,
+            "pc_h1": call.pc_h1,
+            "buys_m5": call.buys_m5,
+            "sells_m5": call.sells_m5,
+            "buys_h1": call.buys_h1,
+            "sells_h1": call.sells_h1,
+            # Live buy
+            "live_buy_status": call.live_buy_status,
+            "live_buy_sent_at": call.live_buy_sent_at,
+            "live_buy_amount_sol": call.live_buy_amount_sol,
+            "live_buy_error": call.live_buy_error,
+            # Live sell
+            "live_sell_status": call.live_sell_status,
+            "live_sell_reason": call.live_sell_reason,
+            "live_sell_sent_at": call.live_sell_sent_at,
+            "live_sell_error": call.live_sell_error,
             "strategy_results": [
                 {
                     "strategy_key": x.strategy_key,

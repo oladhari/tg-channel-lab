@@ -59,7 +59,8 @@ SLIPPAGE_STEPS_BPS_RAYDIUM = sorted({min(int(x), RAYDIUM_MAX_BPS) for x in SLIPP
 _last_sent: dict[int, float] = {}  # call_id -> ts
 
 
-def _get_sig_status(sig: str) -> str | None:
+def _get_sig_status(sig: str) -> tuple[str | None, object]:
+    """Returns (confirmationStatus, err). err is None if TX succeeded."""
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -71,16 +72,25 @@ def _get_sig_status(sig: str) -> str | None:
     jr = r.json()
     v = (((jr.get("result") or {}).get("value")) or [None])[0]
     if not v:
-        return None
-    return v.get("confirmationStatus") or None
+        return None, None
+    return v.get("confirmationStatus") or None, v.get("err")
 
 
 def _confirm_fast(sig: str, max_ms: int) -> bool:
+    """
+    Poll until TX is confirmed (not just processed) or timeout.
+    Returns False immediately if TX was included but reverted (err != None).
+    "processed" is excluded — it can still be dropped before confirmation.
+    """
     deadline = time.time() + (max_ms / 1000.0)
     while time.time() < deadline:
         try:
-            st = _get_sig_status(sig)
-            if st in ("processed", "confirmed", "finalized"):
+            st, err = _get_sig_status(sig)
+            if err is not None:
+                # TX was included in a block but execution failed (e.g. slippage exceeded)
+                print(f"[TRADER_LIVE][TX_REVERTED] sig={sig} err={err}", flush=True)
+                return False
+            if st in ("confirmed", "finalized"):
                 return True
         except Exception:
             pass
@@ -172,7 +182,6 @@ def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
     c, sr, ch = Call, StrategyResult, Channel
 
     # Fetch all DONE calls waiting to be sold, with ALL their strategy results.
-    # We filter by the correct per-channel strategy key in Python below.
     stmt = (
         select(c, sr, ch)
         .join(ch, ch.id == c.channel_id)
@@ -186,17 +195,26 @@ def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
     )
     all_rows = list(db.execute(stmt).all())
 
-    # Keep only rows where the strategy result matches the channel's effective TP/SL
-    result = []
-    seen_call_ids: set[int] = set()
+    # Group all strategy results per call, then pick the best matching one:
+    #   1. Exact match for the channel's per-channel TP/SL key
+    #   2. Fallback to global LIVE_STRATEGY_KEY
+    #   3. Fallback to any available strategy result (so call is never silently skipped)
+    from collections import defaultdict
+    grouped: dict[int, list] = defaultdict(list)
     for call, strat, channel in all_rows:
-        if call.id in seen_call_ids:
-            continue
-        key = _channel_strategy_key(channel)
-        if strat.strategy_key == key:
-            result.append((call, strat, channel))
-            seen_call_ids.add(call.id)
+        grouped[call.id].append((call, strat, channel))
 
+    result = []
+    for call_id, rows in grouped.items():
+        call, _, channel = rows[0]
+        target_key = _channel_strategy_key(channel)
+
+        strats = {strat.strategy_key: (call, strat, channel) for _, strat, _ in rows}
+
+        chosen = strats.get(target_key) or strats.get(LIVE_STRATEGY_KEY) or rows[0]
+        result.append(chosen)
+
+    result.sort(key=lambda r: r[0].started_at)
     return result[:50]
 
 
@@ -228,12 +246,6 @@ def _mark(
     call.live_sell_sent_at = datetime.now(timezone.utc)
     call.live_sell_reason = reason
     call.live_sell_error = err[:300] if err else None
-
-    # optional columns if you add them later
-    if hasattr(call, "live_sell_method"):
-        call.live_sell_method = method
-    if hasattr(call, "live_sell_tx_sig"):
-        call.live_sell_tx_sig = tx
 
     db.add(call)
     db.commit()

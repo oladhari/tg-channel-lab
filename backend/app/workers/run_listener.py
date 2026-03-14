@@ -87,6 +87,7 @@ async def _subscribe_channel(ch: Channel, live_map: dict) -> bool:
                 channel_id=channel_id,
                 mint=mint,
                 symbol=mint[:6],
+                raw_message=msg[:2000] if msg else None,
                 status="RECORDING",
                 duration_sec=int(os.getenv("RECORD_DURATION_SEC", "1500")),
                 live_sell_enabled=live,

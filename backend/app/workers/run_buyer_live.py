@@ -61,7 +61,8 @@ def _get_sol_balance_lamports(pubkey: str) -> int | None:
         return None
 
 
-def _get_sig_status(sig: str) -> str | None:
+def _get_sig_status(sig: str) -> tuple[str | None, object]:
+    """Returns (confirmationStatus, err). err is None if TX succeeded."""
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -73,16 +74,25 @@ def _get_sig_status(sig: str) -> str | None:
     jr = r.json()
     v = (((jr.get("result") or {}).get("value")) or [None])[0]
     if not v:
-        return None
-    return v.get("confirmationStatus") or None
+        return None, None
+    return v.get("confirmationStatus") or None, v.get("err")
 
 
 def _confirm_fast(sig: str, max_ms: int) -> bool:
+    """
+    Poll until TX is confirmed (not just processed) or timeout.
+    Returns False immediately if TX was included but reverted (err != None).
+    "processed" is excluded — it can still be dropped before confirmation.
+    """
     deadline = time.time() + (max_ms / 1000.0)
     while time.time() < deadline:
         try:
-            st = _get_sig_status(sig)
-            if st in ("processed", "confirmed", "finalized"):
+            st, err = _get_sig_status(sig)
+            if err is not None:
+                # TX was included in a block but execution failed (e.g. slippage exceeded)
+                print(f"[BUYER_LIVE][TX_REVERTED] sig={sig} err={err}", flush=True)
+                return False
+            if st in ("confirmed", "finalized"):
                 return True
         except Exception:
             pass
@@ -176,16 +186,10 @@ def _mark(
     call.live_buy_sent_at = datetime.now(timezone.utc)
     call.live_buy_error = (err or None)
 
-    # For auditing, snapshot the amount that was actually used when SENT.
-    # But do NOT "lock" calls on fallback.
+    # Snapshot the amount used when SENT. Do NOT overwrite on fallback so the
+    # per-call override value (if set) is preserved for the GMGN fallback worker.
     if amount_used is not None and status == "SENT":
         call.live_buy_amount_sol = float(amount_used)
-
-    # optional columns if you add them later
-    if hasattr(call, "live_buy_method"):
-        call.live_buy_method = method
-    if hasattr(call, "live_buy_tx_sig"):
-        call.live_buy_tx_sig = tx
 
     db.add(call)
     db.commit()

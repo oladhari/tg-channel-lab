@@ -30,4 +30,4 @@ class StrategyResult(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    call = relationship("Call", back_populates="display_result")
+    call = relationship("Call", back_populates="strategy_results")
