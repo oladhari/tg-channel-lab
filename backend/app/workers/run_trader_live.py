@@ -12,7 +12,7 @@ import requests
 import base58
 from solders.keypair import Keypair
 
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -181,13 +181,21 @@ def _compute_sell_amount_raw(balance_raw: int) -> int:
 def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
     c, sr, ch = Call, StrategyResult, Channel
 
-    # Fetch all DONE calls waiting to be sold, with ALL their strategy results.
+    # Fetch calls waiting to be sold:
+    #   - DONE calls (normal path: full 25-min recording finished)
+    #   - RECORDING calls that have a TP/SL StrategyResult (early-exit path: TP/SL
+    #     was hit during recording; price collection still continues for simulations)
     stmt = (
         select(c, sr, ch)
         .join(ch, ch.id == c.channel_id)
         .join(sr, sr.call_id == c.id)
         .where(ch.live_enabled == True)
-        .where(c.status == "DONE")
+        .where(
+            or_(
+                c.status == "DONE",
+                and_(c.status == "RECORDING", sr.outcome.in_(["TP", "SL"])),
+            )
+        )
         .where(c.live_sell_enabled == True)
         .where(c.live_sell_status == "NONE")
         .order_by(c.started_at.asc())

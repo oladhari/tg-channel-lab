@@ -285,9 +285,11 @@ def record_tick(db: Session, call: Call, now_ts: float) -> float | None:
     return float(px)
 
 
-def finalize_call(db: Session, call: Call) -> None:
+def finalize_call(db: Session, call: Call, set_done: bool = True) -> None:
     """
     Compute display strategy result (TP35/SL20 by env) and mark call DONE.
+    Pass set_done=False to save the StrategyResult without stopping recording
+    (used for early TP/SL live-sell trigger while price collection continues).
     """
     rows = db.execute(
         select(PricePoint.t_sec, PricePoint.price_usd)
@@ -324,7 +326,8 @@ def finalize_call(db: Session, call: Call) -> None:
     sr.pnl_pct = float(round(pnl_pct, 6))
 
     db.add(sr)
-    call.status = "DONE"
+    if set_done:
+        call.status = "DONE"
 
 
 def main() -> None:
@@ -387,7 +390,9 @@ def main() -> None:
                             f"{label} hit at px={latest_px:.8f} entry={entry:.8f}",
                             flush=True,
                         )
-                        finalize_call(db, call)
+                        # Save StrategyResult for live trader, but keep RECORDING
+                        # so price collection continues for the full 25-min window.
+                        finalize_call(db, call, set_done=False)
 
             db.commit()
 
