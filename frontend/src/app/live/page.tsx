@@ -1,5 +1,6 @@
 // frontend/src/app/live/page.tsx
 import { getLiveQueue } from "../../lib/api";
+import { toJST } from "../../lib/time";
 
 export default async function LivePage() {
   const rows = await getLiveQueue();
@@ -43,7 +44,7 @@ export default async function LivePage() {
                   <td style={{ color: r.live_sell_error ? "crimson" : "#666" }}>
                     {r.live_sell_error ? String(r.live_sell_error).slice(0, 60) : ""}
                   </td>
-                  <td>{r.started_at ? String(r.started_at).slice(0, 19) : ""}</td>
+                  <td>{toJST(r.started_at)}</td>
                 </tr>
               ))}
 

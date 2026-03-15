@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from app.db.session import SessionLocal
-from app.models import Call, PricePoint, StrategyResult
+from app.models import Call, Channel, PricePoint, StrategyResult
 from app.workers import pump_ws
 
 DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/"
@@ -223,11 +223,12 @@ def compute_display_result(
     return ("TIME", int(t_last), float(px_last), float(pnl_pct))
 
 
-def record_tick(db: Session, call: Call, now_ts: float) -> None:
+def record_tick(db: Session, call: Call, now_ts: float) -> float | None:
     """
     Record one price point for this call at the current second (t_sec).
     Sets entry_price_usd on first successful price fetch.
     Also ensures the mint is subscribed to the pump.fun WebSocket feed.
+    Returns the fetched price (for real-time TP/SL check) or None.
     """
     # Ensure real-time feed is tracking this mint
     pump_ws.subscribe(call.mint)
@@ -281,6 +282,7 @@ def record_tick(db: Session, call: Call, now_ts: float) -> None:
             price_usd=float(px),
         )
     )
+    return float(px)
 
 
 def finalize_call(db: Session, call: Call) -> None:
@@ -345,6 +347,13 @@ def main() -> None:
             # Decide polling speed based on whether any active call is within fast window
             fast_needed = any((now_ts - c.started_at.timestamp()) < POLL_FAST_SEC for c in calls)
 
+            # Pre-load channels for real-time TP/SL check
+            channel_ids = {c.channel_id for c in calls}
+            channels_by_id: dict[int, Channel] = {}
+            if channel_ids:
+                for ch in db.query(Channel).filter(Channel.id.in_(channel_ids)).all():
+                    channels_by_id[ch.id] = ch
+
             for call in calls:
                 elapsed = int(now_ts - call.started_at.timestamp())
 
@@ -353,8 +362,32 @@ def main() -> None:
                     finalize_call(db, call)
                     continue
 
-                # Record one tick
-                record_tick(db, call, now_ts)
+                # Record one tick; returns the fetched price (or None)
+                latest_px = record_tick(db, call, now_ts)
+
+                # Real-time TP/SL check — finalize immediately when threshold crossed
+                if latest_px is not None and call.entry_price_usd is not None:
+                    entry = float(call.entry_price_usd)
+                    tp_hit = latest_px >= entry * TP_MULT
+                    sl_hit = latest_px <= entry * SL_MULT
+
+                    ch = channels_by_id.get(call.channel_id)
+                    if ch:
+                        ch_tp = ch.live_tp_pct
+                        ch_sl = ch.live_sl_pct
+                        if ch_tp is not None:
+                            tp_hit = tp_hit or (latest_px >= entry * (1 + ch_tp / 100))
+                        if ch_sl is not None:
+                            sl_hit = sl_hit or (latest_px <= entry * (1 - ch_sl / 100))
+
+                    if tp_hit or sl_hit:
+                        label = "TP" if tp_hit else "SL"
+                        print(
+                            f"[RECORDER][EARLY_EXIT] call_id={call.id} mint={call.mint[:8]}... "
+                            f"{label} hit at px={latest_px:.8f} entry={entry:.8f}",
+                            flush=True,
+                        )
+                        finalize_call(db, call)
 
             db.commit()
 

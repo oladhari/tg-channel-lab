@@ -2,6 +2,7 @@
 import { getCall, getCallPrices } from "../../../lib/api";
 import PriceChart from "./PriceChart";
 import { gmgnSolanaTokenUrl } from "../../../lib/links";
+import { toJST } from "../../../lib/time";
 
 type Props = {
   params: any; // can be object OR Promise in some Next versions
@@ -59,7 +60,7 @@ export default async function CallDetailPage(props: Props) {
         </div>
 
         <div><b>Status:</b> {call.status}</div>
-        <div><b>Started:</b> {new Date(call.started_at).toLocaleString()}</div>
+        <div><b>Started:</b> {toJST(call.started_at)}</div>
 
         <div style={{ marginTop: 8 }}>
           <a href="/calls" style={{ textDecoration: "underline", marginRight: 12 }}>

@@ -1,6 +1,7 @@
 // frontend/src/app/channels/[key]/page.tsx
 import { getChannels, getCalls, getPaperStats } from "../../../lib/api";
 import { gmgnSolanaTokenUrl } from "../../../lib/links";
+import { toJST } from "../../../lib/time";
 
 export const dynamic = "force-dynamic";
 
@@ -181,7 +182,7 @@ export default async function ChannelPage(props: {
                     <td>{c.status}</td>
                     <td>{c.outcome ?? ""}</td>
                     <td>{c.pnl_pct != null ? `${Number(c.pnl_pct).toFixed(2)}%` : ""}</td>
-                    <td>{new Date(c.started_at).toLocaleString()}</td>
+                    <td>{toJST(c.started_at)}</td>
                   </tr>
                 );
               })}

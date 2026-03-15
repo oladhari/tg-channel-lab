@@ -1,6 +1,7 @@
 // frontend/src/app/calls/page.tsx
 import { getCalls } from "../../lib/api";
 import { gmgnSolanaTokenUrl } from "../../lib/links";
+import { toJST } from "../../lib/time";
 
 function shortMint(m: string) {
   return `${m.slice(0, 6)}…${m.slice(-6)}`;
@@ -61,7 +62,7 @@ export default async function CallsPage() {
                   <td>{r.entry_price_usd == null ? "" : Number(r.entry_price_usd).toFixed(8)}</td>
                   <td>{r.outcome ?? ""}</td>
                   <td>{r.pnl_pct == null ? "" : `${Number(r.pnl_pct).toFixed(2)}%`}</td>
-                  <td>{new Date(r.started_at).toLocaleString()}</td>
+                  <td>{toJST(r.started_at)}</td>
                 </tr>
               ))}
 
