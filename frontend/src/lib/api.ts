@@ -213,6 +213,24 @@ export function getLiveConfig() {
   return http<LiveConfig>(`/live/config`);
 }
 
+export type WalletInfo = {
+  pubkey: string | null;
+  sol_balance: number | null;
+  total_buys: number;
+  total_sells: number;
+  holding: number;
+  live_channels: Array<{
+    id: number;
+    key: string;
+    telegram_username: string;
+    live_buy_amount_sol: number | null;
+  }>;
+};
+
+export function getWallet() {
+  return http<WalletInfo>(`/live/wallet`);
+}
+
 export function getLiveQueue(params?: { limit?: number }) {
   const qs = new URLSearchParams();
   qs.set("limit", String(params?.limit ?? 200));

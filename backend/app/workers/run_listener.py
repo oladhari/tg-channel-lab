@@ -29,6 +29,29 @@ def extract_first_solana_ca(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def extract_ca_from_event(event) -> str | None:
+    """
+    Search for a Solana CA in all text sources of a Telethon message:
+      1. Message body text (most common)
+      2. URL hyperlinks in message entities (some channels embed CA in a link)
+    """
+    # 1. Plain message text
+    body = (event.message.message or "").strip()
+    mint = extract_first_solana_ca(body)
+    if mint:
+        return mint
+
+    # 2. Entity URLs (MessageEntityTextUrl has a .url attribute)
+    for entity in (event.message.entities or []):
+        url = getattr(entity, "url", None)
+        if url:
+            mint = extract_first_solana_ca(url)
+            if mint:
+                return mint
+
+    return None
+
+
 TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"])
 TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
 
@@ -73,8 +96,14 @@ async def _subscribe_channel(ch: Channel, live_map: dict) -> bool:
 
     async def handler(event, channel_id=channel_id):
         msg = (event.message.message or "").strip()
-        mint = extract_first_solana_ca(msg)
+
+        mint = extract_ca_from_event(event)
         if not mint:
+            print(
+                f"[LISTENER][SKIP] channel_id={channel_id} no CA found | "
+                f"preview={msg[:120]!r}",
+                flush=True,
+            )
             return
 
         db2 = SessionLocal()
@@ -98,11 +127,23 @@ async def _subscribe_channel(ch: Channel, live_map: dict) -> bool:
             db2.commit()
             print(
                 f"[CALL] channel_id={channel_id} mint={mint[:8]}... at "
-                f"{datetime.now().isoformat(timespec='seconds')}"
+                f"{datetime.now().isoformat(timespec='seconds')}",
+                flush=True,
             )
         except IntegrityError:
             db2.rollback()
-            # already seen for that channel → ignore
+            print(
+                f"[LISTENER][DUP] channel_id={channel_id} mint={mint[:8]}... "
+                f"already recorded in this channel — skipping",
+                flush=True,
+            )
+        except Exception as e:
+            db2.rollback()
+            print(
+                f"[LISTENER][ERROR] channel_id={channel_id} mint={mint[:8]}... "
+                f"DB error: {e}",
+                flush=True,
+            )
         finally:
             db2.close()
 

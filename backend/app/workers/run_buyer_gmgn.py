@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from telethon import TelegramClient
@@ -19,8 +19,9 @@ GMGN_TARGET = os.getenv("GMGN_TARGET", "").strip()
 # Fallback default (ONLY if call+channel missing)
 LIVE_BUY_AMOUNT_SOL = float(os.getenv("LIVE_BUY_AMOUNT_SOL", "0.1"))
 
-BUY_POLL_SEC = int(os.getenv("BUYER_POLL_SEC", "2"))
+BUY_POLL_SEC = float(os.getenv("BUYER_POLL_SEC", "1"))
 BUY_COOLDOWN_SEC = int(os.getenv("GMGN_BUY_COOLDOWN_SEC", "15"))
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))
 
 TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"])
 TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
@@ -34,12 +35,8 @@ if not BUYER_SESSION_NAME:
 
 SESSION_PATH = str(SESSION_DIR / f"{BUYER_SESSION_NAME}.session")
 
-import fcntl
-_lock_fp = open(SESSION_PATH + ".lock", "w")
-try:
-    fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    raise SystemExit(f"[LOCK] Session already in use: {SESSION_PATH}")
+# No file lock needed — this client is send-only (receive_updates=False).
+# The exclusive lock is only needed for the listener to prevent duplicate event handlers.
 
 client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, receive_updates=False)
 
@@ -92,6 +89,7 @@ async def gmgn_buy(mint: str, amount_sol: float) -> None:
 
 def pick_ready_calls(db: Session) -> list[Call]:
     c = Call
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
     stmt = (
         select(c)
         .options(joinedload(c.channel))  # IMPORTANT: load Channel for UI amount
@@ -99,6 +97,7 @@ def pick_ready_calls(db: Session) -> list[Call]:
         .where(c.live_buy_status == "FALLBACK_GMGN")
         .where(c.status == "RECORDING")
         .where(c.entry_price_usd.isnot(None))
+        .where(c.started_at >= cutoff)  # skip stale signals after restart
         .order_by(c.started_at.asc())
         .limit(50)
     )

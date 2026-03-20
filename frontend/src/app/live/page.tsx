@@ -1,63 +1,46 @@
 // frontend/src/app/live/page.tsx
-import { getLiveQueue } from "../../lib/api";
-import { toJST } from "../../lib/time";
+import { getLiveQueue, getWallet } from "../../lib/api";
+import LiveMonitor from "./LiveMonitor";
 
 export default async function LivePage() {
-  const rows = await getLiveQueue();
+  const [rows, wallet] = await Promise.all([
+    getLiveQueue({ limit: 100 }),
+    getWallet().catch(() => null),
+  ]);
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <h1 style={{ marginBottom: 8 }}>Live Queue</h1>
-      <p style={{ marginTop: 0, color: "#444" }}>
-        Calls with live selling enabled (GMGN).
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 4 }}>
+        <h1 style={{ margin: 0 }}>Live Monitor</h1>
+        <a href="/" style={{ fontSize: 13, color: "#888", textDecoration: "underline" }}>
+          ← Dashboard
+        </a>
+      </div>
+      <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
+        Auto-refreshes every 3s. Shows signal→buy and hold→sell timing.
       </p>
 
-      <div style={{ overflowX: "auto", marginTop: 14 }}>
-        <table cellPadding={10} style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-              <th>Call ID</th>
-              <th>Channel</th>
-              <th>Mint</th>
-              <th>Status</th>
-              <th>Sell Status</th>
-              <th>Reason</th>
-              <th>Error</th>
-              <th>Started</th>
-            </tr>
-          </thead>
-          <tbody>
-            {Array.isArray(rows) &&
-              rows.map((r: any) => (
-                <tr key={r.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                  <td>{r.id}</td>
-                  <td>
-                    <b>{r.channel_key}</b>{" "}
-                    <span style={{ color: "#666" }}>@{r.telegram_username}</span>
-                  </td>
-                  <td style={{ fontFamily: "monospace" }}>
-                    {r.mint ? `${String(r.mint).slice(0, 10)}...` : ""}
-                  </td>
-                  <td>{r.status}</td>
-                  <td>{r.live_sell_status}</td>
-                  <td>{r.live_sell_reason || r.outcome || ""}</td>
-                  <td style={{ color: r.live_sell_error ? "crimson" : "#666" }}>
-                    {r.live_sell_error ? String(r.live_sell_error).slice(0, 60) : ""}
-                  </td>
-                  <td>{toJST(r.started_at)}</td>
-                </tr>
-              ))}
-
-            {(!rows || rows.length === 0) && (
-              <tr>
-                <td colSpan={8} style={{ padding: 14, color: "#666" }}>
-                  Empty.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      {/* Wallet bar */}
+      <div style={{ display: "flex", gap: 24, padding: "10px 16px", background: "#f0f7ff", borderRadius: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontWeight: 600 }}>
+          {wallet?.sol_balance != null ? `${wallet.sol_balance} SOL` : "—"}
+        </span>
+        <span style={{ color: "#666", fontSize: 12, fontFamily: "monospace" }}>
+          {wallet?.pubkey ? `${wallet.pubkey.slice(0, 8)}…${wallet.pubkey.slice(-8)}` : "no key"}
+        </span>
+        <span style={{ color: "#444" }}>Buys: <b>{wallet?.total_buys ?? "—"}</b></span>
+        <span style={{ color: "#444" }}>Sells: <b>{wallet?.total_sells ?? "—"}</b></span>
+        <span style={{ color: wallet?.holding ? "#d97706" : "#444" }}>
+          Holding: <b>{wallet?.holding ?? "—"}</b>
+        </span>
+        <span style={{ marginLeft: "auto", fontSize: 12, color: "#888" }}>
+          {wallet?.live_channels?.length
+            ? `Live: ${wallet.live_channels.map((c: any) => c.key).join(", ")}`
+            : "No channels live"}
+        </span>
       </div>
+
+      <LiveMonitor initialRows={rows} />
     </main>
   );
 }

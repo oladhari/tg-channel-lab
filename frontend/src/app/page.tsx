@@ -1,7 +1,7 @@
 // frontend/src/app/page.tsx
 import AddChannelForm from "./AddChannelForm";
 import ChannelRowActions from "./ChannelRowActions";
-import { getChannels, getPaperStats, getLiveConfig } from "../lib/api";
+import { getChannels, getPaperStats, getLiveConfig, getWallet } from "../lib/api";
 
 function toNum(v: string | undefined, fallback: number) {
   if (!v) return fallback;
@@ -27,10 +27,11 @@ export default async function Home(props: {
 
   const strategy_key = makeStrategyKey(tp, sl);
 
-  const [channels, stats, liveCfg] = await Promise.all([
+  const [channels, stats, liveCfg, wallet] = await Promise.all([
     getChannels(),
     getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry }),
     getLiveConfig(),
+    getWallet().catch(() => null),
   ]);
 
   return (
@@ -39,6 +40,67 @@ export default async function Home(props: {
       <p style={{ marginTop: 0, color: "#444" }}>
         Recording calls + tracking price points + paper stats (no filters).
       </p>
+
+      {/* ── Wallet panel ── */}
+      <div style={{ marginTop: 16, padding: 16, background: "#f8faff", border: "1px solid #c8d8f0", borderRadius: 12 }}>
+        <div style={{ display: "flex", gap: 32, flexWrap: "wrap", alignItems: "flex-start" }}>
+
+          {/* Balance + pubkey */}
+          <div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 2 }}>Wallet balance</div>
+            <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px" }}>
+              {wallet?.sol_balance != null ? `${wallet.sol_balance} SOL` : "—"}
+            </div>
+            {wallet?.pubkey && (
+              <div style={{ fontSize: 11, color: "#888", marginTop: 2, fontFamily: "monospace" }}>
+                {wallet.pubkey.slice(0, 8)}…{wallet.pubkey.slice(-8)}
+              </div>
+            )}
+          </div>
+
+          {/* Trade counters */}
+          <div style={{ display: "flex", gap: 24 }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{wallet?.total_buys ?? "—"}</div>
+              <div style={{ fontSize: 11, color: "#666" }}>Buys sent</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{wallet?.total_sells ?? "—"}</div>
+              <div style={{ fontSize: 11, color: "#666" }}>Sells sent</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: wallet?.holding ? "#d97706" : undefined }}>
+                {wallet?.holding ?? "—"}
+              </div>
+              <div style={{ fontSize: 11, color: "#666" }}>Holding</div>
+            </div>
+          </div>
+
+          {/* Live channels */}
+          <div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Live trading channels</div>
+            {wallet?.live_channels?.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {wallet.live_channels.map((ch) => (
+                  <div key={ch.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
+                    <a href={`/channels/${ch.key}`} style={{ textDecoration: "underline", fontWeight: 600 }}>
+                      {ch.key}
+                    </a>
+                    <span style={{ color: "#666", fontSize: 12 }}>@{ch.telegram_username}</span>
+                    <span style={{ color: "#888", fontSize: 12 }}>
+                      {ch.live_buy_amount_sol != null ? `${ch.live_buy_amount_sol} SOL/trade` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: "#999", fontSize: 13 }}>No channels live trading</div>
+            )}
+          </div>
+
+        </div>
+      </div>
 
       <div style={{ marginTop: 10, padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>

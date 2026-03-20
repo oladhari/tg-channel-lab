@@ -39,8 +39,12 @@ def _channel_strategy_key(ch: Channel) -> str:
     return LIVE_STRATEGY_KEY
 
 
-TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "5"))
+TRADER_POLL_SEC = float(os.getenv("TRADER_POLL_SEC", "2"))
 SELL_COOLDOWN_SEC = int(os.getenv("LIVE_SELL_COOLDOWN_SEC", "15"))
+# Max age of signal to sell — skip sells for calls older than this (safety net)
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))  # 5 minutes
+# Jito bundle confirmation timeout before falling back to Jupiter
+JITO_CONFIRM_TIMEOUT_SEC = float(os.getenv("LIVE_JITO_CONFIRM_SEC", "3.0"))
 
 # aggressive knobs
 LIVE_CONFIRM_MS = int(os.getenv("LIVE_CONFIRM_MS", "5000"))
@@ -179,7 +183,11 @@ def _compute_sell_amount_raw(balance_raw: int) -> int:
 
 
 def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
+    from datetime import timedelta
+
     c, sr, ch = Call, StrategyResult, Channel
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
 
     # Fetch calls waiting to be sold:
     #   - DONE calls (normal path: full 25-min recording finished)
@@ -198,6 +206,7 @@ def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
         )
         .where(c.live_sell_enabled == True)
         .where(c.live_sell_status == "NONE")
+        .where(c.started_at >= cutoff)  # skip stale signals (e.g. after bot restart)
         .order_by(c.started_at.asc())
         .limit(200)
     )
@@ -376,9 +385,11 @@ async def loop() -> None:
                     bal_raw = _get_token_balance_raw(owner_pk, mint)
                     sell_raw = _compute_sell_amount_raw(bal_raw)
 
+                    signal_age_sec = (datetime.now(timezone.utc) - call.started_at).total_seconds()
                     print(
                         "[TRADER_LIVE][PICK] "
                         f"call_id={call.id} mint={mint[:8]}... reason={reason} "
+                        f"signal_age={signal_age_sec:.1f}s "
                         f"balance_raw={bal_raw} sell_raw={sell_raw} pct={LIVE_SELL_PERCENT}",
                         flush=True,
                     )
@@ -405,7 +416,7 @@ async def loop() -> None:
                     if USE_JITO:
                         try:
                             bundle_id = try_jito_sell(mint, sell_raw)
-                            jito_confirm = confirm_bundle(bundle_id, timeout_sec=8.0)
+                            jito_confirm = confirm_bundle(bundle_id, timeout_sec=JITO_CONFIRM_TIMEOUT_SEC)
                             if jito_confirm in ("confirmed", "finalized"):
                                 _mark(db, call, status="SENT", reason=reason, method="JITO", tx=bundle_id)
                                 _last_sent[call.id] = now

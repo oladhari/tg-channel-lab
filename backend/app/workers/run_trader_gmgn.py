@@ -4,11 +4,11 @@ from __future__ import annotations
 import os
 import time
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from telethon import TelegramClient
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -19,7 +19,8 @@ from app.models import Call, StrategyResult
 GMGN_TARGET = os.getenv("GMGN_TARGET", "").strip()
 GMGN_SELL_PERCENT = os.getenv("GMGN_SELL_PERCENT", "100%").strip()
 LIVE_STRATEGY_KEY = os.getenv("LIVE_STRATEGY_KEY", "tp35_sl20").strip()
-TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "5"))
+TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "2"))
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))
 
 SELL_COOLDOWN_SEC = int(os.getenv("GMGN_SELL_COOLDOWN_SEC", os.getenv("GMGN_COOLDOWN_SEC", "45")))
 
@@ -35,12 +36,8 @@ if not TRADER_SESSION_NAME:
 
 SESSION_PATH = str(SESSION_DIR / f"{TRADER_SESSION_NAME}.session")
 
-import fcntl
-_lock_fp = open(SESSION_PATH + ".lock", "w")
-try:
-    fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    raise SystemExit(f"[LOCK] Session already in use: {SESSION_PATH}")
+# No file lock needed — this client is send-only (receive_updates=False).
+# The exclusive lock is only needed for the listener to prevent duplicate event handlers.
 
 client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, receive_updates=False)
 
@@ -54,13 +51,20 @@ async def gmgn_sell(mint: str) -> None:
 
 def pick_ready_calls(db: Session) -> list[tuple[Call, StrategyResult]]:
     c, sr = Call, StrategyResult
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
     stmt = (
         select(c, sr)
         .join(sr, sr.call_id == c.id)
-        .where(c.status == "DONE")
+        .where(
+            or_(
+                c.status == "DONE",
+                and_(c.status == "RECORDING", sr.outcome.in_(["TP", "SL"])),
+            )
+        )
         .where(c.live_sell_enabled == True)  # noqa: E712
-        .where(c.live_sell_status == "FALLBACK_GMGN")  # ✅ ONLY fallback
+        .where(c.live_sell_status == "FALLBACK_GMGN")  # ONLY fallback
         .where(sr.strategy_key == LIVE_STRATEGY_KEY)
+        .where(c.started_at >= cutoff)  # skip stale signals after restart
         .order_by(c.started_at.asc())
         .limit(50)
     )

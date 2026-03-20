@@ -23,8 +23,12 @@ USE_JITO = os.getenv("USE_JITO", "1").strip() not in ("0", "false", "False")
 # Only used if call+channel missing (should be rare)
 LIVE_BUY_AMOUNT_SOL = float(os.getenv("LIVE_BUY_AMOUNT_SOL", "0.1"))
 
-BUY_POLL_SEC = int(os.getenv("BUYER_POLL_SEC", "2"))
+BUY_POLL_SEC = float(os.getenv("BUYER_POLL_SEC", "1"))
 BUY_COOLDOWN_SEC = int(os.getenv("LIVE_BUY_COOLDOWN_SEC", "15"))
+# Max age of signal to buy — skip calls older than this (prevents stale buys after restart)
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))  # 5 minutes
+# Jito bundle confirmation timeout before falling back to Jupiter
+JITO_CONFIRM_TIMEOUT_SEC = float(os.getenv("LIVE_JITO_CONFIRM_SEC", "3.0"))
 
 # aggressive knobs
 RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
@@ -140,18 +144,22 @@ def _resolve_amount(call: Call) -> tuple[float, str, dict]:
 
 
 def pick_ready_calls(db: Session) -> list[Call]:
+    from datetime import timedelta
+
     c = Call
     ch = Channel
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
 
     stmt = (
         select(c)
         .join(ch, ch.id == c.channel_id)
         .options(joinedload(c.channel))
-        .where(ch.live_enabled == True)          # ✅ keep your condition
+        .where(ch.live_enabled == True)
         .where(c.live_buy_enabled == True)
         .where(c.live_buy_status == "NONE")
         .where(c.status == "RECORDING")
-        # entry_price_usd NOT required — buy immediately on signal; price recorder captures it concurrently
+        .where(c.started_at >= cutoff)  # skip stale signals (e.g. after bot restart)
         .order_by(c.started_at.asc())
         .limit(50)
     )
@@ -318,9 +326,11 @@ async def loop() -> None:
                             flush=True,
                         )
                         continue
+                signal_age_sec = (datetime.now(timezone.utc) - call.started_at).total_seconds()
                 print(
                     "[BUYER_LIVE][PICK] "
                     f"call_id={call.id} mint={call.mint[:8]}... "
+                    f"signal_age={signal_age_sec:.1f}s "
                     f"resolved_amount={amount} source={src} "
                     f"call_amount={dbg['call_amount']} channel_amount={dbg['channel_amount']} "
                     f"env_default={dbg['env_default']} channel_loaded={dbg['channel_loaded']}",
@@ -336,7 +346,7 @@ async def loop() -> None:
                     try:
                         bundle_id = try_jito_buy(call.mint, amount)
                         # Poll confirmation — bundles can be silently dropped
-                        jito_confirm = confirm_bundle(bundle_id, timeout_sec=8.0)
+                        jito_confirm = confirm_bundle(bundle_id, timeout_sec=JITO_CONFIRM_TIMEOUT_SEC)
                         if jito_confirm in ("confirmed", "finalized"):
                             _mark(db, call, status="SENT", method="JITO", tx=bundle_id, amount_used=amount)
                             _last_sent[call.id] = now

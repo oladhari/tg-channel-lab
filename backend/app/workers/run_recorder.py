@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -32,6 +33,12 @@ SLOW_INT = int(os.getenv("POLL_SLOW_INTERVAL_SEC", "5"))
 
 # If we can't get an entry price after this many seconds, stop tracking
 NO_PRICE_TIMEOUT_SEC = int(os.getenv("NO_PRICE_TIMEOUT_SEC", "30"))
+
+# In-memory set of call IDs where early TP/SL exit has already been triggered.
+# Prevents repeated finalize_call() calls for the same call when the price stays
+# above TP or below SL across multiple polling ticks.
+# Thread-safe for reads/writes under GIL (set.add / in-check are atomic enough).
+_early_exited_ids: set[int] = set()
 
 # Display strategy (only for UI / quick reading)
 TP_PCT = float(os.getenv("DISPLAY_TP_PCT", "35"))
@@ -330,11 +337,116 @@ def finalize_call(db: Session, call: Call, set_done: bool = True) -> None:
         call.status = "DONE"
 
 
+def _live_monitor_thread() -> None:
+    """
+    200ms loop — dedicated TP/SL watcher for live trading calls only.
+
+    Two price sources (in priority order):
+      1. pump.fun WebSocket cache — zero API cost, sub-second freshness
+         for bonding-curve tokens. Effectively real-time.
+      2. Parallel HTTP (Dexscreener + Jupiter) — used for graduated tokens
+         or when pump_ws has no cache entry. Rate-limited to 1 call per
+         mint per 500ms so we don't hit API limits.
+
+    When TP or SL is crossed:
+      • Calls finalize_call(set_done=False) — creates / updates the
+        StrategyResult so trader-live can pick it up immediately.
+      • Recording continues (call stays RECORDING) for the full 25-min
+        window so simulation data stays accurate.
+    """
+    HTTP_INTERVAL_SEC = 0.5   # minimum gap between HTTP calls per mint
+    LOOP_SLEEP_SEC    = 0.2   # how often the loop wakes up
+
+    http_last: dict[str, float] = {}  # mint -> last HTTP fetch time
+
+    while True:
+        time.sleep(LOOP_SLEEP_SEC)
+        db = None
+        try:
+            db = SessionLocal()
+
+            rows = db.execute(
+                select(Call, Channel)
+                .join(Channel, Channel.id == Call.channel_id)
+                .where(Call.status == "RECORDING")
+                .where(Call.live_buy_status == "SENT")   # we bought it
+                .where(Call.live_sell_status == "NONE")  # not yet sold
+                .where(Call.entry_price_usd.isnot(None))
+                .where(Channel.live_enabled == True)     # noqa: E712
+            ).all()
+
+            for call, channel in rows:
+                entry = float(call.entry_price_usd)
+
+                # ── 1. pump.fun WebSocket cache (zero cost) ──────────────
+                px = pump_ws.get_cached_price(call.mint)
+
+                # ── 2. HTTP fallback for graduated / non-pump.fun tokens ──
+                if px is None:
+                    now = time.time()
+                    if now - http_last.get(call.mint, 0.0) >= HTTP_INTERVAL_SEC:
+                        px = _parallel_http_price(call.mint)
+                        http_last[call.mint] = now
+
+                if px is None:
+                    continue
+
+                # ── Determine per-channel or global TP/SL thresholds ─────
+                ch_tp = getattr(channel, "live_tp_pct", None)
+                ch_sl = getattr(channel, "live_sl_pct", None)
+                tp_mult = (1.0 + ch_tp / 100.0) if ch_tp is not None else TP_MULT
+                sl_mult = (1.0 - ch_sl / 100.0) if ch_sl is not None else SL_MULT
+
+                tp_hit = px >= entry * tp_mult
+                sl_hit = px <= entry * sl_mult
+
+                if not tp_hit and not sl_hit:
+                    continue
+
+                # Already triggered — skip (price is still above TP / below SL)
+                if call.id in _early_exited_ids:
+                    continue
+
+                label = "TP" if tp_hit else "SL"
+                print(
+                    f"[RECORDER][LIVE_MON] {label} call_id={call.id} "
+                    f"mint={call.mint[:8]}... px={px:.8f} entry={entry:.8f}",
+                    flush=True,
+                )
+
+                try:
+                    finalize_call(db, call, set_done=False)
+                    db.commit()
+                    _early_exited_ids.add(call.id)
+                except Exception as fe:
+                    db.rollback()
+                    print(
+                        f"[RECORDER][LIVE_MON][FINALIZE_ERR] call_id={call.id} {fe}",
+                        flush=True,
+                    )
+
+        except Exception as e:
+            print(f"[RECORDER][LIVE_MON][ERROR] {e}", flush=True)
+            if db:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        finally:
+            if db:
+                db.close()
+
+
 def main() -> None:
     print("[RECORDER] started")
 
     # Start pump.fun real-time WebSocket feed in background
     pump_ws.start_background()
+
+    # Start dedicated live-trading TP/SL monitor (200ms loop, pump_ws + HTTP fallback)
+    t = threading.Thread(target=_live_monitor_thread, daemon=True, name="live-monitor")
+    t.start()
+    print("[RECORDER] live_monitor thread started (200ms TP/SL check for live calls)", flush=True)
 
     while True:
         now_ts = time.time()
@@ -368,22 +480,19 @@ def main() -> None:
                 # Record one tick; returns the fetched price (or None)
                 latest_px = record_tick(db, call, now_ts)
 
-                # Real-time TP/SL check — finalize immediately when threshold crossed
+                # Real-time TP/SL check — finalize immediately when threshold crossed.
+                # Use per-channel TP/SL if set, otherwise fall back to global display values.
                 if latest_px is not None and call.entry_price_usd is not None:
                     entry = float(call.entry_price_usd)
-                    tp_hit = latest_px >= entry * TP_MULT
-                    sl_hit = latest_px <= entry * SL_MULT
-
                     ch = channels_by_id.get(call.channel_id)
-                    if ch:
-                        ch_tp = ch.live_tp_pct
-                        ch_sl = ch.live_sl_pct
-                        if ch_tp is not None:
-                            tp_hit = tp_hit or (latest_px >= entry * (1 + ch_tp / 100))
-                        if ch_sl is not None:
-                            sl_hit = sl_hit or (latest_px <= entry * (1 - ch_sl / 100))
+                    ch_tp = getattr(ch, "live_tp_pct", None) if ch else None
+                    ch_sl = getattr(ch, "live_sl_pct", None) if ch else None
+                    tp_mult = (1.0 + ch_tp / 100.0) if ch_tp is not None else TP_MULT
+                    sl_mult = (1.0 - ch_sl / 100.0) if ch_sl is not None else SL_MULT
+                    tp_hit = latest_px >= entry * tp_mult
+                    sl_hit = latest_px <= entry * sl_mult
 
-                    if tp_hit or sl_hit:
+                    if (tp_hit or sl_hit) and call.id not in _early_exited_ids:
                         label = "TP" if tp_hit else "SL"
                         print(
                             f"[RECORDER][EARLY_EXIT] call_id={call.id} mint={call.mint[:8]}... "
@@ -393,6 +502,7 @@ def main() -> None:
                         # Save StrategyResult for live trader, but keep RECORDING
                         # so price collection continues for the full 25-min window.
                         finalize_call(db, call, set_done=False)
+                        _early_exited_ids.add(call.id)
 
             db.commit()
 

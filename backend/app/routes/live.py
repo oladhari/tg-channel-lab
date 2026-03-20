@@ -39,6 +39,10 @@ def live_queue(
                 c.started_at,
                 c.entry_price_usd,
                 c.duration_sec,
+                c.live_buy_status,
+                c.live_buy_sent_at,
+                c.live_buy_amount_sol,
+                c.live_buy_error,
                 c.live_sell_enabled,
                 c.live_sell_status,
                 c.live_sell_reason,
@@ -70,6 +74,79 @@ def live_queue(
         db.close()
 
 
+@router.get("/wallet")
+def live_wallet():
+    """Wallet SOL balance + live trade stats from the bot."""
+    import os
+    import json
+    import requests as req
+
+    rpc_url = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+    raw_key = os.getenv("SOLANA_PRIVATE_KEY", "").strip()
+
+    pubkey: str | None = None
+    sol_balance: float | None = None
+
+    if raw_key:
+        try:
+            from solders.keypair import Keypair  # type: ignore
+
+            if raw_key.startswith("["):
+                kp = Keypair.from_bytes(bytes(json.loads(raw_key)))
+            else:
+                import base58  # type: ignore
+                kp = Keypair.from_bytes(base58.b58decode(raw_key))
+            pubkey = str(kp.pubkey())
+
+            resp = req.post(
+                rpc_url,
+                json={"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [pubkey]},
+                timeout=5,
+            )
+            lamports = resp.json().get("result", {}).get("value", 0)
+            sol_balance = round(lamports / 1_000_000_000, 4)
+        except Exception:
+            pass
+
+    db: Session = SessionLocal()
+    try:
+        from sqlalchemy import func
+
+        c, ch = Call, Channel
+
+        total_buys = db.execute(
+            select(func.count()).where(c.live_buy_status != "NONE")
+        ).scalar() or 0
+
+        total_sells = db.execute(
+            select(func.count()).where(c.live_sell_status == "SENT")
+        ).scalar() or 0
+
+        # Bought but sell not yet triggered
+        holding = db.execute(
+            select(func.count()).where(
+                (c.live_buy_status == "SENT") & (c.live_sell_status == "NONE")
+            )
+        ).scalar() or 0
+
+        live_channels = db.execute(
+            select(ch.id, ch.key, ch.telegram_username, ch.live_buy_amount_sol)
+            .where(ch.live_enabled == True)  # noqa: E712
+            .order_by(ch.key)
+        ).all()
+
+        return {
+            "pubkey": pubkey,
+            "sol_balance": sol_balance,
+            "total_buys": total_buys,
+            "total_sells": total_sells,
+            "holding": holding,
+            "live_channels": [dict(r._mapping) for r in live_channels],
+        }
+    finally:
+        db.close()
+
+
 @router.get("/config")
 def live_config():
     """
@@ -81,5 +158,5 @@ def live_config():
         "gmgn_target_set": bool(os.getenv("GMGN_TARGET", "").strip()),
         "gmgn_sell_percent": os.getenv("GMGN_SELL_PERCENT", "100%").strip(),
         "live_strategy_key": os.getenv("LIVE_STRATEGY_KEY", "tp35_sl20").strip(),
-        "trader_poll_sec": int(os.getenv("TRADER_POLL_SEC", "5")),
+        "trader_poll_sec": int(os.getenv("TRADER_POLL_SEC", "2")),
     }
