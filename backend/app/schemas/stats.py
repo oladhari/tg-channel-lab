@@ -50,3 +50,25 @@ class GridSimOut(BaseModel):
     sl_values: list[float]
 
     results: list[GridCellOut]
+
+
+class BestStatOut(BaseModel):
+    channel_id: int
+    key: str
+    telegram_username: str
+
+    best_tp_pct: float
+    best_sl_pct: float
+
+    n_trades: int
+    tp: int
+    sl: int
+    time: int
+
+    win_rate_tp_pct: float
+    avg_pnl_pct: float
+
+    start_balance_sol: float
+    end_balance_sol: float
+
+    computed_at: float  # unix timestamp when cache was last built

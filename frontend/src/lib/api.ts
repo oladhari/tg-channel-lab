@@ -237,6 +237,33 @@ export function getLiveQueue(params?: { limit?: number }) {
   return http<any[]>(`/live/queue?${qs.toString()}`);
 }
 
+export type BestStat = {
+  channel_id: number;
+  key: string;
+  telegram_username: string;
+  best_tp_pct: number;
+  best_sl_pct: number;
+  n_trades: number;
+  tp: number;
+  sl: number;
+  time: number;
+  win_rate_tp_pct: number;
+  avg_pnl_pct: number;
+  start_balance_sol: number;
+  end_balance_sol: number;
+  computed_at: number;
+};
+
+export function getBestStats(params?: {
+  start_balance_sol?: number;
+  entry_sol?: number;
+}) {
+  const qs = new URLSearchParams();
+  qs.set("start_balance_sol", String(params?.start_balance_sol ?? 1.0));
+  if (params?.entry_sol != null) qs.set("entry_sol", String(params.entry_sol));
+  return http<BestStat[]>(`/stats/best?${qs.toString()}`);
+}
+
 export type GridCell = {
   tp_pct: number;
   sl_pct: number;

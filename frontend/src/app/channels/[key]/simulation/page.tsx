@@ -6,8 +6,8 @@ import { useParams } from "next/navigation";
 import { useState } from "react";
 import { getGridSim, type GridSim } from "../../../../lib/api";
 
-const DEFAULT_TP = "35,40,45,50,55,60,65";
-const DEFAULT_SL = "20,25,30,35,40,45,50";
+const DEFAULT_TP = "20,25,30,35,40,45,50,55,60,65,70,75,80,90,100";
+const DEFAULT_SL = "10,15,20,25,30,35,40,45,50";
 
 export default function ChannelSimulationPage() {
   const params = useParams<{ key: string }>();
