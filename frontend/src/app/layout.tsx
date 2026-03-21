@@ -1,6 +1,7 @@
 // frontend/src/app/layout.tsx
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Nav from "./Nav";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -26,7 +27,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        {children}
+        <Nav />
+        <div style={{ minHeight: "calc(100vh - 52px)" }}>
+          {children}
+        </div>
       </body>
     </html>
   );

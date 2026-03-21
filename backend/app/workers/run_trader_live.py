@@ -206,6 +206,7 @@ def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
         )
         .where(c.live_sell_enabled == True)
         .where(c.live_sell_status == "NONE")
+        .where(c.entry_price_usd.isnot(None))
         # Age filter: skip truly stale signals we never bought.
         # If live_buy_status=SENT we already hold the token — always attempt sell
         # regardless of age (the autoflush bug could have delayed TP detection past

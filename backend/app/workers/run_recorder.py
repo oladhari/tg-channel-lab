@@ -19,8 +19,10 @@ from app.workers import pump_ws
 DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/"
 SOL_CHAIN_ID = "solana"
 
-# Jupiter price API — free, no rate limit stated
-JUP_PRICE_URL = "https://lite-api.jup.ag/price/v2"
+_JUP_BASE = os.getenv("JUP_BASE_URL", "https://lite-api.jup.ag").strip().rstrip("/")
+JUP_PRICE_URL = f"{_JUP_BASE}/price/v2"
+_JUP_API_KEY = os.getenv("JUP_API_KEY", "").strip()
+_JUP_HEADERS = {"Authorization": f"Bearer {_JUP_API_KEY}"} if _JUP_API_KEY else {}
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 # Recording settings
@@ -82,6 +84,7 @@ def _fetch_price_jupiter(mint: str) -> float | None:
         r = requests.get(
             JUP_PRICE_URL,
             params={"ids": mint, "vsToken": USDC_MINT},
+            headers=_JUP_HEADERS,
             timeout=6,
         )
         if r.status_code != 200:

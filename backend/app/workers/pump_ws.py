@@ -12,6 +12,7 @@ Coverage:      tokens still on the pump.fun bonding curve.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 
@@ -27,13 +28,19 @@ except ImportError:
 
 PUMP_WS_URL = "wss://pumpportal.fun/api/data"
 SOL_MINT = "So11111111111111111111111111111111111111112"
-JUP_PRICE_URL = "https://lite-api.jup.ag/price/v2"
 
-# How long a cached price is considered fresh (seconds)
-CACHE_MAX_AGE_SEC = float(5)
+_JUP_BASE = os.getenv("JUP_BASE_URL", "https://lite-api.jup.ag").strip().rstrip("/")
+JUP_PRICE_URL = f"{_JUP_BASE}/price/v2"
+_JUP_API_KEY = os.getenv("JUP_API_KEY", "").strip()
+_JUP_HEADERS = {"Authorization": f"Bearer {_JUP_API_KEY}"} if _JUP_API_KEY else {}
+
+# How long a cached price is considered fresh (seconds).
+# 15s: if no trade fires in 15s the token is illiquid — last known price is still
+# the best signal available without burning an HTTP call.
+CACHE_MAX_AGE_SEC = float(15)
 
 # Refresh SOL/USD price every N seconds
-SOL_PRICE_REFRESH_SEC = 30
+SOL_PRICE_REFRESH_SEC = 10
 
 # ── Shared state (module-level, daemon thread writes, main thread reads) ────
 # mint -> (price_usd: float, last_updated_ts: float)
@@ -52,7 +59,7 @@ _sol_price_last: float = 0.0
 def _refresh_sol_price() -> None:
     global _sol_price_usd, _sol_price_last
     try:
-        r = requests.get(JUP_PRICE_URL, params={"ids": SOL_MINT}, timeout=5)
+        r = requests.get(JUP_PRICE_URL, params={"ids": SOL_MINT}, headers=_JUP_HEADERS, timeout=5)
         if r.status_code == 200:
             data = r.json().get("data") or {}
             item = data.get(SOL_MINT)
