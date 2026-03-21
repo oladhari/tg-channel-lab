@@ -237,6 +237,46 @@ export function getLiveQueue(params?: { limit?: number }) {
   return http<any[]>(`/live/queue?${qs.toString()}`);
 }
 
+export function markCallSold(id: number) {
+  return http<{ ok: boolean; call_id: number }>(`/live/calls/${id}/mark-sold`, { method: "POST" });
+}
+
+export type OnChainTrade = {
+  signature: string;
+  timestamp: number | null;
+  direction: "BUY" | "SELL" | "SWAP" | null;
+  mint: string | null;
+  sol_amount: number | null;
+  token_amount: number | null;
+  dex: string;
+  description: string;
+  call: {
+    id: number;
+    mint: string;
+    symbol: string | null;
+    started_at: string;
+    entry_price_usd: number | null;
+    live_buy_status: string;
+    live_sell_status: string;
+    live_sell_reason: string | null;
+    live_buy_amount_sol: number | null;
+    strategy_key: string | null;
+    outcome: string | null;
+    pnl_pct: number | null;
+    exit_price_usd: number | null;
+  } | null;
+};
+
+export type WalletHistory = {
+  pubkey: string | null;
+  trades: OnChainTrade[];
+  error: string | null;
+};
+
+export function getWalletHistory(limit = 50) {
+  return http<WalletHistory>(`/live/wallet-history?limit=${limit}`);
+}
+
 export type BestStat = {
   channel_id: number;
   key: string;

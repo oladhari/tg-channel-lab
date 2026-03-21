@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { toJST } from "../../lib/time";
+import { gmgnSolanaTokenUrl } from "../../lib/links";
+import { markCallSold, getWallet, getWalletHistory, type WalletInfo, type WalletHistory, type OnChainTrade } from "../../lib/api";
 
 function secDiff(a: string | null, b: string | null): string {
   if (!a || !b) return "—";
@@ -10,14 +12,6 @@ function secDiff(a: string | null, b: string | null): string {
   return diff < 60 ? `${diff.toFixed(1)}s` : `${(diff / 60).toFixed(1)}m`;
 }
 
-function holdingSec(started: string | null, buy: string | null): string {
-  if (!buy) return "—";
-  const ref = buy;
-  const now = Date.now();
-  const diff = (now - new Date(ref).getTime()) / 1000;
-  if (diff < 0) return "—";
-  return diff < 60 ? `${diff.toFixed(0)}s` : `${(diff / 60).toFixed(1)}m`;
-}
 
 function statusBadge(status: string | null) {
   const s = (status || "").toUpperCase();
@@ -49,18 +43,50 @@ function outcomeColor(outcome: string | null) {
   return "#888";
 }
 
-export default function LiveMonitor({ initialRows }: { initialRows: any[] }) {
+export default function LiveMonitor({ initialRows, initialWallet }: { initialRows: any[]; initialWallet: WalletInfo | null }) {
   const [rows, setRows] = useState<any[]>(initialRows);
+  const [wallet, setWallet] = useState<WalletInfo | null>(initialWallet);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [now, setNow] = useState<Date>(new Date());
   const [error, setError] = useState<string | null>(null);
+  const [markingId, setMarkingId] = useState<number | null>(null);
+  const [history, setHistory] = useState<WalletHistory | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const h = await getWalletHistory(50);
+      setHistory(h);
+    } catch (e: any) {
+      setHistory({ pubkey: null, trades: [], error: e.message });
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function handleMarkSold(id: number) {
+    setMarkingId(id);
+    try {
+      await markCallSold(id);
+      await refresh();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setMarkingId(null);
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/api/live/queue?limit=100", { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const [queueRes, walletData] = await Promise.all([
+        fetch("/api/live/queue?limit=100", { cache: "no-store" }),
+        getWallet().catch(() => null),
+      ]);
+      if (!queueRes.ok) throw new Error(`HTTP ${queueRes.status}`);
+      const data = await queueRes.json();
       setRows(data);
+      setWallet(walletData);
       setLastRefresh(new Date());
       setError(null);
     } catch (e: any) {
@@ -90,8 +116,45 @@ export default function LiveMonitor({ initialRows }: { initialRows: any[] }) {
     (r) => r.live_buy_status === "NONE" && r.status === "RECORDING"
   );
 
+  const S = {
+    card:    { padding: 20, background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 12 } as const,
+    cardDark:{ padding: 20, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12 } as const,
+    label:   { fontSize: 11, color: "#6b7280", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 2 },
+    stat:    { fontSize: 26, fontWeight: 700, letterSpacing: "-0.5px", lineHeight: 1 } as const,
+  };
+
   return (
     <div>
+      {/* Wallet stat cards — live-updating */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 20 }}>
+        <div style={S.card}>
+          <div style={S.label}>Wallet balance</div>
+          <div style={S.stat}>
+            {wallet?.sol_balance != null ? `${wallet.sol_balance}` : "—"}
+            <span style={{ fontSize: 14, fontWeight: 400, color: "#6b7280" }}> SOL</span>
+          </div>
+          {wallet?.pubkey && (
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4, fontFamily: "monospace" }}>
+              {wallet.pubkey.slice(0, 8)}…{wallet.pubkey.slice(-8)}
+            </div>
+          )}
+        </div>
+        <div style={S.cardDark}>
+          <div style={S.label}>Buys sent</div>
+          <div style={S.stat}>{wallet?.total_buys ?? "—"}</div>
+        </div>
+        <div style={S.cardDark}>
+          <div style={S.label}>Sells sent</div>
+          <div style={S.stat}>{wallet?.total_sells ?? "—"}</div>
+        </div>
+        <div style={{ ...S.cardDark, borderColor: wallet?.holding ? "#fde68a" : undefined, background: wallet?.holding ? "#fffbeb" : undefined }}>
+          <div style={S.label}>Currently holding</div>
+          <div style={{ ...S.stat, color: wallet?.holding ? "#d97706" : undefined }}>
+            {wallet?.holding ?? "—"}
+          </div>
+        </div>
+      </div>
+
       {/* Status bar */}
       <div style={{ display: "flex", gap: 20, alignItems: "center", marginBottom: 14, fontSize: 13 }}>
         <span style={{ color: "#16a34a", fontWeight: 600 }}>● LIVE</span>
@@ -124,6 +187,7 @@ export default function LiveMonitor({ initialRows }: { initialRows: any[] }) {
                 <th style={{ textAlign: "left" }}>Sell status</th>
                 <th style={{ textAlign: "left" }}>Outcome</th>
                 <th style={{ textAlign: "left" }}>Signal at</th>
+                <th style={{ textAlign: "left" }}></th>
               </tr>
             </thead>
             <tbody>
@@ -140,7 +204,11 @@ export default function LiveMonitor({ initialRows }: { initialRows: any[] }) {
                     <td><a href={`/calls/${r.id}`} style={{ textDecoration: "underline" }}>{r.id}</a></td>
                     <td><b>{r.channel_key}</b></td>
                     <td style={{ fontFamily: "monospace", fontSize: 11 }}>
-                      {r.mint ? `${String(r.mint).slice(0, 12)}…` : ""}
+                      {r.mint ? (
+                        <a href={gmgnSolanaTokenUrl(r.mint)} target="_blank" rel="noreferrer" style={{ color: "#1d4ed8" }}>
+                          {String(r.mint).slice(0, 12)}…
+                        </a>
+                      ) : ""}
                     </td>
                     <td>{secDiff(r.started_at, r.live_buy_sent_at)}</td>
                     <td style={{ color: holdWarn ? "#dc2626" : "#d97706", fontWeight: 600 }}>
@@ -152,6 +220,15 @@ export default function LiveMonitor({ initialRows }: { initialRows: any[] }) {
                       {r.outcome || "—"}
                     </td>
                     <td style={{ fontSize: 11, color: "#666" }}>{toJST(r.started_at)}</td>
+                    <td>
+                      <button
+                        onClick={() => handleMarkSold(r.id)}
+                        disabled={markingId === r.id}
+                        style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: "#fee2e2", color: "#b91c1c", border: "1px solid #fecaca", cursor: "pointer" }}
+                      >
+                        {markingId === r.id ? "…" : "Mark sold"}
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -192,7 +269,11 @@ export default function LiveMonitor({ initialRows }: { initialRows: any[] }) {
                     <td><a href={`/calls/${r.id}`} style={{ textDecoration: "underline" }}>{r.id}</a></td>
                     <td><b>{r.channel_key}</b></td>
                     <td style={{ fontFamily: "monospace", fontSize: 11 }}>
-                      {r.mint ? `${String(r.mint).slice(0, 12)}…` : ""}
+                      {r.mint ? (
+                        <a href={gmgnSolanaTokenUrl(r.mint)} target="_blank" rel="noreferrer" style={{ color: "#1d4ed8" }}>
+                          {String(r.mint).slice(0, 12)}…
+                        </a>
+                      ) : ""}
                     </td>
                     <td style={{ color: waitWarn ? "#dc2626" : "#2563eb", fontWeight: 600 }}>
                       {waitStr}
@@ -206,58 +287,297 @@ export default function LiveMonitor({ initialRows }: { initialRows: any[] }) {
         )}
       </section>
 
-      {/* ── Completed / Sold ── */}
+      {/* ── On-Chain Wallet History (Helius) ── */}
+      <section style={{ marginBottom: 32, borderTop: "2px solid #e5e7eb", paddingTop: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+          <h3 style={{ margin: 0, color: "#1d4ed8" }}>On-Chain Swap History</h3>
+          <button
+            onClick={loadHistory}
+            disabled={historyLoading}
+            style={{ padding: "5px 14px", borderRadius: 7, fontSize: 12, fontWeight: 600, background: "#dbeafe", color: "#1d4ed8", border: "1px solid #bfdbfe", cursor: "pointer" }}
+          >
+            {historyLoading ? "Loading…" : history ? "Refresh" : "Load from Helius"}
+          </button>
+          {history?.pubkey && (
+            <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>
+              {history.pubkey.slice(0, 8)}…{history.pubkey.slice(-8)}
+            </span>
+          )}
+        </div>
+
+        {!history && !historyLoading && (
+          <p style={{ color: "#9ca3af", fontSize: 13 }}>
+            Fetches real on-chain swaps from the Solana RPC and matches them against bot calls by mint address.
+            Requires <code>SOLANA_PRIVATE_KEY</code> to be set (used to derive the wallet address).
+          </p>
+        )}
+
+        {history?.error && (
+          <div style={{ padding: "10px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, color: "#b91c1c", fontSize: 13, marginBottom: 12 }}>
+            Error: {history.error}
+          </div>
+        )}
+
+        {history && !history.error && history.trades.length === 0 && (
+          <p style={{ color: "#9ca3af", fontSize: 13 }}>No swap transactions found for this wallet.</p>
+        )}
+
+        {history && history.trades.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table cellPadding={8} style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#f0f9ff", borderBottom: "2px solid #bae6fd" }}>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Time (JST)</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Direction</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Mint</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>SOL amount</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>DEX</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#f0fdf4" }}>Bot call</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#f0fdf4" }}>Bot buy</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#eff6ff" }}>Paper TP/SL</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#eff6ff" }}>Paper PnL</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#fdf4ff" }}>Real PnL</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Tx</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.trades.map((t: OnChainTrade, i: number) => {
+                  const ts = t.timestamp ? new Date(t.timestamp * 1000) : null;
+                  const timeStr = ts ? ts.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false }) : "—";
+                  const isBuy = t.direction === "BUY";
+                  const isSell = t.direction === "SELL";
+                  const call = t.call;
+                  const skMatch = call?.strategy_key?.match(/^tp(\d+)_sl(\d+)$/);
+                  const tp = skMatch ? Number(skMatch[1]) : 35;
+                  const sl = skMatch ? Number(skMatch[2]) : 20;
+                  const hasMatch = !!call;
+                  return (
+                    <tr key={i} style={{ borderBottom: "1px solid #f0f0f0", background: hasMatch ? "#f0fdf4" : "#fff" }}>
+                      <td style={{ padding: "8px 10px", fontSize: 11, color: "#555", whiteSpace: "nowrap" }}>{timeStr}</td>
+                      <td style={{ padding: "8px 10px", fontWeight: 700, color: isBuy ? "#16a34a" : isSell ? "#dc2626" : "#888" }}>
+                        {t.direction || "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", fontFamily: "monospace", fontSize: 11 }}>
+                        {t.mint ? (
+                          <a href={gmgnSolanaTokenUrl(t.mint)} target="_blank" rel="noreferrer" style={{ color: "#1d4ed8" }}>
+                            {t.mint.slice(0, 10)}…
+                          </a>
+                        ) : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", fontWeight: 600, color: isBuy ? "#dc2626" : isSell ? "#16a34a" : "#888" }}>
+                        {t.sol_amount != null ? `${isBuy ? "-" : "+"}${t.sol_amount} SOL` : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", fontSize: 11, color: "#6b7280" }}>{t.dex || "—"}</td>
+                      <td style={{ padding: "8px 10px", background: "#f0fdf4" }}>
+                        {call ? (
+                          <a href={`/calls/${call.id}`} style={{ textDecoration: "underline", fontWeight: 600 }}>
+                            #{call.id} {call.symbol || ""}
+                          </a>
+                        ) : <span style={{ color: "#9ca3af" }}>no match</span>}
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#f0fdf4", fontSize: 11 }}>
+                        {call ? (
+                          <>
+                            <span style={{ color: call.live_buy_status === "SENT" ? "#16a34a" : "#d97706", fontWeight: 600 }}>
+                              {call.live_buy_status}
+                            </span>
+                            {call.live_buy_amount_sol != null && (
+                              <span style={{ color: "#9ca3af" }}> {call.live_buy_amount_sol} SOL</span>
+                            )}
+                          </>
+                        ) : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#eff6ff", fontSize: 11 }}>
+                        {call ? (
+                          <>
+                            <span style={{ color: "#16a34a", fontWeight: 600 }}>TP +{tp}%</span>
+                            {" / "}
+                            <span style={{ color: "#dc2626", fontWeight: 600 }}>SL -{sl}%</span>
+                            <div style={{ color: "#9ca3af", fontSize: 10 }}>{call.strategy_key}</div>
+                          </>
+                        ) : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#eff6ff", fontWeight: 600, color: (call?.pnl_pct ?? 0) >= 0 ? "#16a34a" : "#dc2626" }}>
+                        {call?.pnl_pct != null
+                          ? `${Number(call.pnl_pct) >= 0 ? "+" : ""}${Number(call.pnl_pct).toFixed(1)}% (${call.outcome})`
+                          : call ? "pending" : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#fdf4ff", fontWeight: 600 }}>
+                        {(() => {
+                          if (t.direction !== "SELL") return <span style={{ color: "#9ca3af" }}>—</span>;
+                          const buySol = call?.live_buy_amount_sol;
+                          const sellSol = t.sol_amount;
+                          if (!buySol || !sellSol) return <span style={{ color: "#9ca3af" }}>—</span>;
+                          const realPnl = ((sellSol - buySol) / buySol) * 100;
+                          return (
+                            <span style={{ color: realPnl >= 0 ? "#16a34a" : "#dc2626" }}>
+                              {realPnl >= 0 ? "+" : ""}{realPnl.toFixed(1)}%
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        {t.signature ? (
+                          <a
+                            href={`https://solscan.io/tx/${t.signature}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ fontSize: 11, color: "#6366f1" }}
+                          >
+                            solscan
+                          </a>
+                        ) : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ── Completed — Real vs Paper Analysis ── */}
       <section>
+        {/* Summary row */}
+        {recent.length > 0 && (() => {
+          const liveTP  = recent.filter((r) => r.live_sell_reason === "TP").length;
+          const liveSL  = recent.filter((r) => r.live_sell_reason === "SL").length;
+          const liveErr = recent.filter((r) => r.live_sell_status === "ERROR").length;
+          const paperTP = recent.filter((r) => r.outcome === "TP").length;
+          const paperSL = recent.filter((r) => r.outcome === "SL").length;
+          const paperPnl = recent.reduce((s: number, r: any) => s + (r.pnl_pct != null ? Number(r.pnl_pct) : 0), 0);
+          const avgPaperPnl = recent.length ? paperPnl / recent.length : 0;
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 14 }}>
+              <div style={{ padding: "10px 14px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10 }}>
+                <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>Live TP hits</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#16a34a" }}>{liveTP}</div>
+              </div>
+              <div style={{ padding: "10px 14px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10 }}>
+                <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>Live SL hits</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#dc2626" }}>{liveSL}</div>
+              </div>
+              <div style={{ padding: "10px 14px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10 }}>
+                <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>Errors</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#d97706" }}>{liveErr}</div>
+              </div>
+              <div style={{ padding: "10px 14px", background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 10 }}>
+                <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>Paper TP / SL</div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>
+                  <span style={{ color: "#16a34a" }}>{paperTP}↑</span>
+                  {" / "}
+                  <span style={{ color: "#dc2626" }}>{paperSL}↓</span>
+                </div>
+              </div>
+              <div style={{ padding: "10px 14px", background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 10 }}>
+                <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>Avg paper PnL</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: avgPaperPnl >= 0 ? "#16a34a" : "#dc2626" }}>
+                  {avgPaperPnl >= 0 ? "+" : ""}{avgPaperPnl.toFixed(1)}%
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         <h3 style={{ margin: "0 0 8px", color: "#444" }}>
-          Completed ({recent.length})
+          Completed — Real vs Paper ({recent.length})
         </h3>
         {recent.length === 0 ? (
           <p style={{ color: "#999", fontSize: 13 }}>No completed trades yet.</p>
         ) : (
-          <table cellPadding={9} style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: "#f8f8f8", borderBottom: "2px solid #e5e7eb" }}>
-                <th style={{ textAlign: "left" }}>ID</th>
-                <th style={{ textAlign: "left" }}>Channel</th>
-                <th style={{ textAlign: "left" }}>Mint</th>
-                <th style={{ textAlign: "left" }}>Signal→Buy</th>
-                <th style={{ textAlign: "left" }}>Held</th>
-                <th style={{ textAlign: "left" }}>Outcome</th>
-                <th style={{ textAlign: "left" }}>PnL</th>
-                <th style={{ textAlign: "left" }}>Buy status</th>
-                <th style={{ textAlign: "left" }}>Sell status</th>
-                <th style={{ textAlign: "left" }}>Error</th>
-                <th style={{ textAlign: "left" }}>Signal at</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((r) => (
-                <tr key={r.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                  <td><a href={`/calls/${r.id}`} style={{ textDecoration: "underline" }}>{r.id}</a></td>
-                  <td><b>{r.channel_key}</b></td>
-                  <td style={{ fontFamily: "monospace", fontSize: 11 }}>
-                    {r.mint ? `${String(r.mint).slice(0, 12)}…` : ""}
-                  </td>
-                  <td>{secDiff(r.started_at, r.live_buy_sent_at)}</td>
-                  <td>{secDiff(r.live_buy_sent_at, r.live_sell_sent_at)}</td>
-                  <td style={{ color: outcomeColor(r.outcome), fontWeight: 600 }}>
-                    {r.outcome || "—"}
-                  </td>
-                  <td style={{ color: (r.pnl_pct ?? 0) >= 0 ? "#16a34a" : "#dc2626", fontWeight: 600 }}>
-                    {r.pnl_pct != null ? `${Number(r.pnl_pct).toFixed(1)}%` : "—"}
-                  </td>
-                  <td>{statusBadge(r.live_buy_status)}</td>
-                  <td>{statusBadge(r.live_sell_status)}</td>
-                  <td style={{ color: "crimson", fontSize: 11, maxWidth: 160 }}>
-                    {r.live_buy_error || r.live_sell_error
-                      ? String(r.live_buy_error || r.live_sell_error).slice(0, 80)
-                      : ""}
-                  </td>
-                  <td style={{ fontSize: 11, color: "#666" }}>{toJST(r.started_at)}</td>
+          <div style={{ overflowX: "auto" }}>
+            <table cellPadding={8} style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#f8f8f8", borderBottom: "2px solid #e5e7eb" }}>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>ID</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Channel</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Mint</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Configured TP/SL</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#f0fdf4" }}>Live trigger</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#f0fdf4" }}>Live sell</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#eff6ff" }}>Paper outcome</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", background: "#eff6ff" }}>Paper PnL</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Held</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Error</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Signal at</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {recent.map((r) => {
+                  const liveTrigger = r.live_sell_reason;
+                  const paperOutcome = r.outcome;
+                  // Discrepancy: live and paper disagree (e.g. live triggered SL but paper says TP would have hit)
+                  const discrepancy = liveTrigger && paperOutcome && liveTrigger !== paperOutcome;
+                  // Parse TP/SL from actual strategy_key (e.g. "tp55_sl20" → tp=55, sl=20)
+                  // Fall back to channel settings, then to env defaults
+                  const skMatch = typeof r.strategy_key === "string"
+                    ? r.strategy_key.match(/^tp(\d+)_sl(\d+)$/)
+                    : null;
+                  const tp = skMatch ? Number(skMatch[1]) : (r.live_tp_pct ?? 35);
+                  const sl = skMatch ? Number(skMatch[2]) : (r.live_sl_pct ?? 20);
+                  const entryUsd = r.entry_price_usd;
+                  const tpPrice = entryUsd != null ? (entryUsd * (1 + tp / 100)) : null;
+                  const slPrice = entryUsd != null ? (entryUsd * (1 - sl / 100)) : null;
+                  return (
+                    <tr
+                      key={r.id}
+                      style={{ borderBottom: "1px solid #f0f0f0", background: discrepancy ? "#fffbeb" : "#fff" }}
+                    >
+                      <td style={{ padding: "8px 10px" }}>
+                        <a href={`/calls/${r.id}`} style={{ textDecoration: "underline" }}>{r.id}</a>
+                        {discrepancy && <span style={{ marginLeft: 4, fontSize: 10, background: "#fef3c7", color: "#92400e", padding: "1px 4px", borderRadius: 4 }}>⚠ mismatch</span>}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}><b>{r.channel_key}</b></td>
+                      <td style={{ padding: "8px 10px", fontFamily: "monospace", fontSize: 11 }}>
+                        {r.mint ? (
+                          <a href={gmgnSolanaTokenUrl(r.mint)} target="_blank" rel="noreferrer" style={{ color: "#1d4ed8" }}>
+                            {String(r.mint).slice(0, 10)}…
+                          </a>
+                        ) : ""}
+                      </td>
+                      <td style={{ padding: "8px 10px", fontSize: 11 }}>
+                        <span style={{ color: "#16a34a", fontWeight: 600 }}>TP +{tp}%</span>
+                        {tpPrice != null && <span style={{ color: "#9ca3af" }}> (${tpPrice.toFixed(8)})</span>}
+                        <br />
+                        <span style={{ color: "#dc2626", fontWeight: 600 }}>SL -{sl}%</span>
+                        {slPrice != null && <span style={{ color: "#9ca3af" }}> (${slPrice.toFixed(8)})</span>}
+                        {r.strategy_key && (
+                          <div style={{ color: "#9ca3af", fontSize: 10, marginTop: 2 }}>{r.strategy_key}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#f0fdf4" }}>
+                        <span style={{
+                          fontWeight: 700, fontSize: 12,
+                          color: liveTrigger === "TP" ? "#16a34a" : liveTrigger === "SL" ? "#dc2626" : "#888",
+                        }}>
+                          {liveTrigger || "—"}
+                        </span>
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#f0fdf4" }}>
+                        {statusBadge(r.live_sell_status)}
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#eff6ff" }}>
+                        <span style={{ color: outcomeColor(paperOutcome), fontWeight: 700 }}>
+                          {paperOutcome || "—"}
+                        </span>
+                      </td>
+                      <td style={{ padding: "8px 10px", background: "#eff6ff", fontWeight: 600, color: (r.pnl_pct ?? 0) >= 0 ? "#16a34a" : "#dc2626" }}>
+                        {r.pnl_pct != null ? `${Number(r.pnl_pct) >= 0 ? "+" : ""}${Number(r.pnl_pct).toFixed(1)}%` : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>{secDiff(r.live_buy_sent_at, r.live_sell_sent_at)}</td>
+                      <td style={{ padding: "8px 10px", color: "crimson", fontSize: 11, maxWidth: 140 }}>
+                        {r.live_buy_error || r.live_sell_error
+                          ? String(r.live_buy_error || r.live_sell_error).slice(0, 60)
+                          : ""}
+                      </td>
+                      <td style={{ padding: "8px 10px", fontSize: 11, color: "#666" }}>{toJST(r.started_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>
