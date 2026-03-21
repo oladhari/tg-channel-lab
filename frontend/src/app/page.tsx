@@ -1,16 +1,12 @@
 // frontend/src/app/page.tsx
 import AddChannelForm from "./AddChannelForm";
 import ChannelRowActions from "./ChannelRowActions";
-import { getChannels, getPaperStats, getLiveConfig, getWallet } from "../lib/api";
+import { getChannels, getBestStats, getLiveConfig, getWallet } from "../lib/api";
 
 function toNum(v: string | undefined, fallback: number) {
   if (!v) return fallback;
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function makeStrategyKey(tp: number, sl: number) {
-  return `tp${tp}_sl${sl}`;
 }
 
 type SearchParams = { [key: string]: string | string[] | undefined };
@@ -20,16 +16,12 @@ export default async function Home(props: {
 }) {
   const searchParams: SearchParams = await Promise.resolve(props.searchParams ?? {});
 
-  const tp = toNum(typeof searchParams.tp === "string" ? searchParams.tp : undefined, 35);
-  const sl = toNum(typeof searchParams.sl === "string" ? searchParams.sl : undefined, 20);
   const start = toNum(typeof searchParams.start === "string" ? searchParams.start : undefined, 1.0);
   const entry = toNum(typeof searchParams.entry === "string" ? searchParams.entry : undefined, 0.1);
 
-  const strategy_key = makeStrategyKey(tp, sl);
-
-  const [channels, stats, liveCfg, wallet] = await Promise.all([
+  const [channels, bestStats, liveCfg, wallet] = await Promise.all([
     getChannels(),
-    getPaperStats({ strategy_key, start_balance_sol: start, entry_sol: entry }),
+    getBestStats({ start_balance_sol: start, entry_sol: entry }),
     getLiveConfig(),
     getWallet().catch(() => null),
   ]);
@@ -180,15 +172,15 @@ export default async function Home(props: {
         </div>
       </section>
 
-      {/* ── Paper stats ── */}
+      {/* ── Best strategy per channel ── */}
       <section style={{ marginTop: 32 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Paper Stats</h2>
+          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Best Strategy per Channel</h2>
           <span style={{ fontSize: 12, color: "#9ca3af" }}>
-            strategy: <b>{strategy_key}</b> · start {start} SOL · entry {entry} SOL
+            grid: TP 20→100 × SL 10→50 (153 combos) · start {start} SOL · entry {entry} SOL
           </span>
           <span style={{ fontSize: 12, color: "#9ca3af" }}>
-            (change with <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 4 }}>?tp=35&sl=20&start=1&entry=0.1</code>)
+            cached 5 min · (change with <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 4 }}>?start=1&entry=0.1</code>)
           </span>
         </div>
         <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: 12 }}>
@@ -196,30 +188,34 @@ export default async function Home(props: {
             <thead style={{ background: "#f9fafb" }}>
               <tr>
                 <th style={S.th}>Channel</th>
+                <th style={S.th}>Best Strategy</th>
                 <th style={S.th}>Trades</th>
-                <th style={S.th}>TP</th>
-                <th style={S.th}>SL</th>
-                <th style={S.th}>TIME</th>
+                <th style={S.th}>TP hits</th>
+                <th style={S.th}>SL hits</th>
                 <th style={S.th}>Win rate</th>
                 <th style={S.th}>Avg PnL</th>
-                <th style={{ ...S.th }}>Balance</th>
+                <th style={S.th}>Best Balance</th>
               </tr>
             </thead>
             <tbody>
-              {stats.map((s) => {
+              {bestStats.map((s) => {
                 const gain = Number(s.end_balance_sol) - Number(s.start_balance_sol);
                 return (
-                  <tr key={`${s.channel_id}-${s.strategy_key}`} style={{ background: "#fff" }}>
+                  <tr key={s.channel_id} style={{ background: "#fff" }}>
                     <td style={S.td}>
                       <a href={`/channels/${s.key}`} style={{ color: "#1d4ed8", fontWeight: 600, textDecoration: "none" }}>
                         {s.key}
                       </a>{" "}
                       <span style={{ color: "#9ca3af", fontSize: 11 }}>@{s.telegram_username}</span>
                     </td>
+                    <td style={S.td}>
+                      <span style={S.badge("#1d4ed8")}>TP {s.best_tp_pct}%</span>
+                      {" "}
+                      <span style={S.badge("#7c3aed")}>SL {s.best_sl_pct}%</span>
+                    </td>
                     <td style={S.td}>{s.n_trades}</td>
                     <td style={{ ...S.td, color: "#16a34a", fontWeight: 600 }}>{s.tp}</td>
                     <td style={{ ...S.td, color: "#dc2626", fontWeight: 600 }}>{s.sl}</td>
-                    <td style={{ ...S.td, color: "#6b7280" }}>{s.time}</td>
                     <td style={S.td}>
                       <span style={S.badge(Number(s.win_rate_tp_pct) >= 50 ? "#16a34a" : "#dc2626")}>
                         {Number(s.win_rate_tp_pct).toFixed(1)}%
@@ -238,10 +234,10 @@ export default async function Home(props: {
                   </tr>
                 );
               })}
-              {stats.length === 0 && (
+              {bestStats.length === 0 && (
                 <tr>
                   <td colSpan={8} style={{ padding: 20, color: "#9ca3af", textAlign: "center", fontSize: 13 }}>
-                    No stats yet.
+                    No completed calls yet — stats appear once recording finishes.
                   </td>
                 </tr>
               )}

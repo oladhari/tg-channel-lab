@@ -12,8 +12,8 @@ class Channel(Base):
     __tablename__ = "channels"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    key: Mapped[str] = mapped_column(String(50), unique=True, index=True)  # e.g. "matt"
-    telegram_username: Mapped[str] = mapped_column(String(120), unique=True, index=True)  # e.g. "mattprintalphacalls"
+    key: Mapped[str] = mapped_column(String(50), unique=True, index=True)  # e.g. "my_channel"
+    telegram_username: Mapped[str] = mapped_column(String(120), unique=True, index=True)  # e.g. "my_channel_username"
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     live_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

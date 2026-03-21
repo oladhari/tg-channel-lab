@@ -1,6 +1,9 @@
 # backend/app/routes/stats.py
 from __future__ import annotations
 
+import time as _time
+import threading as _threading
+
 from fastapi import APIRouter, Query, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -8,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.settings import settings
 from app.db.session import SessionLocal
 from app.models import Channel, Call, StrategyResult
-from app.schemas.stats import PaperStatsOut, GridSimOut, GridCellOut
+from app.schemas.stats import PaperStatsOut, GridSimOut, GridCellOut, BestStatOut
 from app.services.geckoterm import get_top_pool, get_ohlcv_candles, simulate_with_candles
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -133,6 +136,134 @@ def paper_stats(
 
     finally:
         db.close()
+
+
+# =========================================================
+# BEST STRATEGY PER CHANNEL  (wide grid + 5-min TTL cache)
+# =========================================================
+
+# TP: 20 → 100 step 5  (17 values)
+# SL: 10 → 50 step 5   (9 values)
+# Total: 153 combinations per channel
+_BEST_TP = list(range(20, 105, 5))   # [20, 25, ..., 100]
+_BEST_SL = list(range(10, 55, 5))    # [10, 15, ..., 50]
+
+_BEST_CACHE_TTL = 300  # seconds
+_best_cache: dict = {"data": None, "params": None, "ts": 0.0}
+_best_lock = _threading.Lock()
+_best_worker: _threading.Thread | None = None
+
+
+def _run_best_stats_bg(start_balance_sol: float, trade_entry_sol: float, cache_key: tuple) -> None:
+    """Background thread: runs the full grid and updates the cache."""
+    global _best_cache, _best_worker
+    db: Session = SessionLocal()
+    now = _time.time()
+    try:
+        channels = list(db.execute(select(Channel)).scalars().all())
+        out_list: list[BestStatOut] = []
+
+        for ch in channels:
+            stmt = (
+                select(Call)
+                .where(Call.channel_id == ch.id)
+                .where(Call.status == "DONE")
+                .options(selectinload(Call.prices))
+                .order_by(Call.started_at.asc())
+            )
+            calls = list(db.execute(stmt).scalars().all())
+            usable = [c for c in calls if c.entry_price_usd is not None or (c.prices and len(c.prices) > 0)]
+            if not usable:
+                continue
+
+            best: dict | None = None
+            for tp in _BEST_TP:
+                for sl in _BEST_SL:
+                    bal = float(start_balance_sol)
+                    n_trades = tp_n = sl_n = time_n = 0
+                    sum_pnl = 0.0
+                    for c in usable:
+                        outcome, pnl_pct = _simulate_one_call(c, float(tp), float(sl))
+                        n_trades += 1
+                        sum_pnl += pnl_pct
+                        out = outcome.upper()
+                        if out == "TP":
+                            tp_n += 1
+                        elif out == "SL":
+                            sl_n += 1
+                        else:
+                            time_n += 1
+                        pos = min(trade_entry_sol, bal)
+                        bal += pos * (pnl_pct / 100.0)
+                    if best is None or bal > best["end_balance_sol"]:
+                        avg_pnl = (sum_pnl / n_trades) if n_trades else 0.0
+                        win_rate = (100.0 * tp_n / n_trades) if n_trades else 0.0
+                        best = {
+                            "best_tp_pct": float(tp), "best_sl_pct": float(sl),
+                            "n_trades": n_trades, "tp": tp_n, "sl": sl_n, "time": time_n,
+                            "win_rate_tp_pct": _round2(win_rate), "avg_pnl_pct": _round2(avg_pnl),
+                            "start_balance_sol": _round2(float(start_balance_sol)),
+                            "end_balance_sol": _round2(float(bal)),
+                        }
+
+            if best:
+                out_list.append(BestStatOut(
+                    channel_id=ch.id, key=ch.key, telegram_username=ch.telegram_username,
+                    computed_at=now, **best,
+                ))
+
+        out_list.sort(key=lambda x: x.end_balance_sol, reverse=True)
+        with _best_lock:
+            _best_cache["data"] = out_list
+            _best_cache["ts"] = now
+            _best_cache["params"] = cache_key
+    except Exception as _exc:
+        print(f"[STATS][best_stats_bg] ERROR: {_exc}", flush=True)
+    finally:
+        db.close()
+        with _best_lock:
+            _best_worker = None
+
+
+@router.get("/best", response_model=list[BestStatOut])
+def best_stats(
+    start_balance_sol: float = Query(default=1.0, gt=0),
+    entry_sol: float | None = Query(default=None, gt=0),
+):
+    """
+    For every channel, run a full TP/SL grid (153 combos) over DONE calls
+    and return the single best-performing strategy per channel.
+
+    Results are cached in memory for 5 minutes.
+    On cache miss the computation runs in a background thread — the endpoint
+    returns immediately (stale data or empty list) so the dashboard never hangs.
+    """
+    global _best_worker
+    trade_entry_sol = float(entry_sol) if entry_sol is not None else float(
+        getattr(settings, "PAPER_ENTRY_SOL", 0.1)
+    )
+    cache_key = (round(start_balance_sol, 4), round(trade_entry_sol, 4))
+    now = _time.time()
+
+    with _best_lock:
+        if (
+            _best_cache["data"] is not None
+            and _best_cache["params"] == cache_key
+            and (now - _best_cache["ts"]) < _BEST_CACHE_TTL
+        ):
+            return _best_cache["data"]
+
+        # Cache is cold — kick off background computation if not already running
+        if _best_worker is None or not _best_worker.is_alive():
+            _best_worker = _threading.Thread(
+                target=_run_best_stats_bg,
+                args=(start_balance_sol, trade_entry_sol, cache_key),
+                daemon=True,
+            )
+            _best_worker.start()
+
+        # Return stale data if available, otherwise empty list (computing in bg)
+        return _best_cache["data"] or []
 
 
 # =========================================================

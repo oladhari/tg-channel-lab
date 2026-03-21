@@ -5,10 +5,12 @@ A research and automated trading system for Solana token calls from Telegram cha
 **What it does:**
 - Listens to Telegram channels in real-time and detects Solana token mint addresses
 - Records price history for every call (25 min, adaptive 2s/5s polling + pump.fun WebSocket)
-- Simulates TP/SL trading strategies across all calls (paper trading)
-- Shows per-channel performance stats on a dashboard
+- Runs a full TP/SL grid simulation (153 combinations: TP 20→100%, SL 10→50%) per channel and surfaces the single best-performing strategy for each
+- Dashboard ranks channels by their peak achievable balance (cached 5 min) — no more fixed tp35/sl20
 - Executes live trades via GMGN bot (Telegram) or direct on-chain swaps (Jupiter → Raydium → GMGN fallback)
-- Live Monitor page — auto-refreshing view of signal→buy timing, hold duration, PnL, and wallet balance
+- Live Monitor page — auto-refreshing view of signal→buy timing, hold duration, PnL, and wallet balance; includes on-chain swap history from the public Solana RPC (no API key required) matched against bot calls by mint address
+- Per-channel simulation page with configurable TP/SL grid and optional accurate OHLCV backtesting via GeckoTerminal
+- Dashboard best-strategy computation is non-blocking (background thread + 5min cache) — page never times out
 
 ---
 
@@ -54,12 +56,11 @@ POLL_FAST_INTERVAL_SEC=2
 POLL_SLOW_INTERVAL_SEC=5
 NO_PRICE_TIMEOUT_SEC=30
 
-# Strategy thresholds (used for display and recording simulation)
-DISPLAY_TP_PCT=35
-DISPLAY_SL_PCT=20
-SIM_TP_PCT=35.0
-SIM_SL_PCT=20.0
+# Paper simulation entry size
 PAPER_ENTRY_SOL=0.1
+
+# Strategy key used by live traders (must match what the recorder produces)
+LIVE_STRATEGY_KEY=tp35_sl20
 
 # GMGN live trading (optional — leave empty to disable)
 GMGN_TARGET=
@@ -72,6 +73,7 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 SOLANA_PRIVATE_KEY=
 LIVE_BUY_AMOUNT_SOL=0.1
 LIVE_FAST_MODE=1
+
 ```
 
 ### 2. Create the sessions folder
@@ -180,7 +182,24 @@ http://localhost:3000
 
 Add your first Telegram channel from the UI — the listener starts monitoring it immediately.
 
-The **Live Monitor** page (`/live`) shows real-time signal→buy timing, hold duration, PnL, and wallet balance with 3-second auto-refresh.
+The **Live Monitor** page (`/live`) shows real-time signal→buy timing, hold duration, PnL, and wallet balance with 3-second auto-refresh. It also has an **On-Chain Swap History** section that fetches actual blockchain swaps via the free native Solana RPC (no API key required), matches them to bot calls by mint address, and shows paper vs real PnL side by side.
+
+---
+
+## Finding Telegram Signal Channels
+
+The app does not bundle a list of channels — what you monitor is entirely up to you.
+
+A practical way to discover active Solana signal channels:
+
+1. Open [GMGN.ai](https://gmgn.ai) and browse the **trending** or **new tokens** charts.
+2. Click on any token that spiked early — check its "Smart Money" buyers.
+3. Many early callers link their Telegram channel in their profile or trade notes.
+4. Search Telegram directly for terms like `solana calls`, `solana gems`, or `memecoin alpha`.
+
+Once you find a channel worth tracking, add it from the app's **Channels** UI page — no restart needed, the listener auto-detects it within 60 seconds.
+
+> **Tip:** Start with 2–3 channels and let the dashboard surface their best TP/SL strategy after a few days of data before scaling up.
 
 ---
 
@@ -272,7 +291,7 @@ The recorder runs two parallel processes:
 - **200ms live-monitor thread**: checks pump.fun WebSocket cache first (zero cost, sub-second freshness for bonding-curve tokens), then HTTP fallback (rate-limited to 500ms/mint) for graduated tokens.
 - **Main recording loop** (2s fast / 5s slow): records price points to DB for the full 25-min window.
 
-Per-channel TP/SL thresholds are configurable from the UI and override the global `DISPLAY_TP_PCT`/`DISPLAY_SL_PCT` values.
+Per-channel TP/SL thresholds can be set from the UI and override the recorder's built-in defaults (35% TP / 20% SL).
 
 ### Stale signal protection
 
@@ -299,8 +318,8 @@ TELEGRAM_SESSION_TRADER=tg_lab_session_trader  # must differ from listener
 ```
 Then re-authorize the buyer/trader sessions (see Step 3).
 
-**Listener not detecting channels after adding from UI:**
-The listener loads channels once at startup. Restart it after adding a new channel:
+**Listener not detecting a newly added channel:**
+The listener auto-detects new channels every 60 seconds — no restart needed. If you need it immediately:
 ```bash
 docker compose restart listener
 ```
