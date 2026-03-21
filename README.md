@@ -74,9 +74,6 @@ SOLANA_PRIVATE_KEY=
 LIVE_BUY_AMOUNT_SOL=0.1
 LIVE_FAST_MODE=1
 
-# On-chain swap history (optional — enables Helius wallet history on Live Monitor)
-# Free API key at https://dashboard.helius.dev (no credit card required)
-HELIUS_API_KEY=
 ```
 
 ### 2. Create the sessions folder
@@ -185,7 +182,24 @@ http://localhost:3000
 
 Add your first Telegram channel from the UI — the listener starts monitoring it immediately.
 
-The **Live Monitor** page (`/live`) shows real-time signal→buy timing, hold duration, PnL, and wallet balance with 3-second auto-refresh. It also has an **On-Chain Swap History** section (requires `HELIUS_API_KEY`) that fetches actual blockchain swaps, matches them to bot calls by mint address, and shows paper vs real comparison side by side.
+The **Live Monitor** page (`/live`) shows real-time signal→buy timing, hold duration, PnL, and wallet balance with 3-second auto-refresh. It also has an **On-Chain Swap History** section that fetches actual blockchain swaps via the free native Solana RPC (no API key required), matches them to bot calls by mint address, and shows paper vs real PnL side by side.
+
+---
+
+## Finding Telegram Signal Channels
+
+The app does not bundle a list of channels — what you monitor is entirely up to you.
+
+A practical way to discover active Solana signal channels:
+
+1. Open [GMGN.ai](https://gmgn.ai) and browse the **trending** or **new tokens** charts.
+2. Click on any token that spiked early — check its "Smart Money" buyers.
+3. Many early callers link their Telegram channel in their profile or trade notes.
+4. Search Telegram directly for terms like `solana calls`, `solana gems`, or `memecoin alpha`.
+
+Once you find a channel worth tracking, add it from the app's **Channels** UI page — no restart needed, the listener auto-detects it within 60 seconds.
+
+> **Tip:** Start with 2–3 channels and let the dashboard surface their best TP/SL strategy after a few days of data before scaling up.
 
 ---
 
@@ -304,8 +318,8 @@ TELEGRAM_SESSION_TRADER=tg_lab_session_trader  # must differ from listener
 ```
 Then re-authorize the buyer/trader sessions (see Step 3).
 
-**Listener not detecting channels after adding from UI:**
-The listener loads channels once at startup. Restart it after adding a new channel:
+**Listener not detecting a newly added channel:**
+The listener auto-detects new channels every 60 seconds — no restart needed. If you need it immediately:
 ```bash
 docker compose restart listener
 ```

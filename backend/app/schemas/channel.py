@@ -5,8 +5,8 @@ from pydantic import BaseModel, Field
 
 
 class ChannelCreate(BaseModel):
-    key: str = Field(..., examples=["matt"])
-    telegram_username: str = Field(..., examples=["mattprintalphacalls"])
+    key: str = Field(..., examples=["my_channel"])
+    telegram_username: str = Field(..., examples=["my_channel_username"])
     enabled: bool = True
     live_enabled: bool = False
     live_buy_amount_sol: float = Field(default=0.005, gt=0)

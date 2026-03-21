@@ -1,6 +1,14 @@
 """
-Join all channels with the listener Telegram account.
-Run once: docker compose run --rm listener python scripts/join_channels.py
+Join Telegram channels with the listener account so it can receive their messages.
+
+Edit the CHANNELS list below (same usernames as in seed_channels.py), then run:
+
+    docker compose run --rm listener python scripts/join_channels.py
+
+The listener Telegram account must be a member of each channel to receive
+NewMessage events. Run this once after adding channels.
+
+Where to find channels: see scripts/seed_channels.py for tips.
 """
 import os
 import asyncio
@@ -9,31 +17,9 @@ from telethon import TelegramClient
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.errors import FloodWaitError
 
-CHANNELS = [
-    "bat_gamble",
-    "mattprintalphacalls",
-    "seekrtrending",
-    "memesdontlies",
-    "insightcasino",
-    "pikachucallsgirls",
-    "azunasplays",
-    "memecoincallsignal",
-    "zen_call",
-    "minegems",
-    "memecoinpumps300x",
-    "kolsignal",
-    "deezesignal",
-    "earlybirdtg",
-    "michiosuzukiofsatoshicalls",
-    "marksgems",
-    "alphakollswithins",
-    "wesendingshit",
-    "tradersviewtrenches",
-    "marcellcooks",
-    "alphakingsol",
-    "mcdonald100xcalls",
-    "cto_scanner",
-    "michelleshills",
+# Replace these with the usernames you want to join (without @)
+CHANNELS: list[str] = [
+    # "example_channel_username",
 ]
 
 SESSION_DIR = Path(os.environ.get("TELEGRAM_SESSION_DIR", "/app/sessions"))
@@ -45,6 +31,10 @@ API_HASH = os.environ["TELEGRAM_API_HASH"]
 
 
 async def main():
+    if not CHANNELS:
+        print("No channels configured. Edit the CHANNELS list in this file first.")
+        return
+
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
     await client.start()
 
@@ -63,5 +53,6 @@ async def main():
 
     await client.disconnect()
     print("Done.")
+
 
 asyncio.run(main())
