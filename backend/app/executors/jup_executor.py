@@ -21,6 +21,11 @@ JUP_BASE_URL = os.getenv("JUP_BASE_URL", "https://lite-api.jup.ag").strip().rstr
 JUP_QUOTE_URL = f"{JUP_BASE_URL}/swap/v1/quote"
 JUP_SWAP_URL = f"{JUP_BASE_URL}/swap/v1/swap"
 
+# Optional Jupiter API key — avoids 429 on the free public endpoint.
+# Set JUP_API_KEY in .env and use JUP_BASE_URL=https://api.jup.ag (paid endpoint).
+JUP_API_KEY = os.getenv("JUP_API_KEY", "").strip()
+_JUP_HEADERS = {"Authorization": f"Bearer {JUP_API_KEY}"} if JUP_API_KEY else {}
+
 MAX_SEND_RETRIES = int(os.getenv("JUP_MAX_SEND_RETRIES", "3"))
 
 # Aggressive knobs (used by workers too)
@@ -137,7 +142,7 @@ def _jup_get_quote(
         "amount": str(int(in_amount_raw)),
         "slippageBps": str(int(slippage_bps)),
     }
-    r = requests.get(JUP_QUOTE_URL, params=params, timeout=timeout_sec)
+    r = requests.get(JUP_QUOTE_URL, params=params, headers=_JUP_HEADERS, timeout=timeout_sec)
     if r.status_code != 200:
         raise RuntimeError(f"Jupiter quote error {r.status_code}: {r.text[:250]}")
     return r.json()
@@ -162,7 +167,7 @@ def _jup_build_swap_tx(
             }
         },
     }
-    r = requests.post(JUP_SWAP_URL, json=payload, timeout=timeout_sec)
+    r = requests.post(JUP_SWAP_URL, json=payload, headers=_JUP_HEADERS, timeout=timeout_sec)
     if r.status_code != 200:
         raise RuntimeError(f"Jupiter swap error {r.status_code}: {r.text[:250]}")
     data = r.json()

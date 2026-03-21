@@ -21,7 +21,7 @@ from app.models import Call, Channel, StrategyResult
 
 from app.executors.jup_executor import SOL_MINT, jup_swap_exact_in
 from app.executors.raydium_executor import raydium_swap_exact_in
-from app.executors.jito_executor import jup_swap_jito, confirm_bundle
+from app.executors.jito_executor import jup_swap_jito, confirm_bundle, JITO_TIP_LAMPORTS
 
 USE_JITO = os.getenv("USE_JITO", "1").strip() not in ("0", "false", "False")
 
@@ -206,7 +206,16 @@ def pick_ready_rows(db: Session) -> list[tuple[Call, StrategyResult, Channel]]:
         )
         .where(c.live_sell_enabled == True)
         .where(c.live_sell_status == "NONE")
-        .where(c.started_at >= cutoff)  # skip stale signals (e.g. after bot restart)
+        # Age filter: skip truly stale signals we never bought.
+        # If live_buy_status=SENT we already hold the token — always attempt sell
+        # regardless of age (the autoflush bug could have delayed TP detection past
+        # the 5-min window before being corrected at 25-min finalization).
+        .where(
+            or_(
+                c.live_buy_status == "SENT",   # already holding — always sell
+                c.started_at >= cutoff,         # fresh signal — apply normal age gate
+            )
+        )
         .order_by(c.started_at.asc())
         .limit(200)
     )
@@ -268,60 +277,82 @@ def _mark(
     db.commit()
 
 
-def try_jito_sell(mint: str, in_amount_raw: int) -> str:
-    """Submit a TOKEN -> SOL swap as a Jito bundle. Returns bundle_id."""
-    last_err: Exception | None = None
-
-    for bps in SLIPPAGE_STEPS_BPS:
-        try:
-            print(
-                f"[TRADER_LIVE][JITO TRY] mint={mint[:8]}... bps={bps} in_amount_raw={in_amount_raw}",
-                flush=True,
-            )
-            bundle_id, _quote = jup_swap_jito(
-                input_mint=mint,
-                output_mint=SOL_MINT,
-                in_amount_raw=in_amount_raw,
-                slippage_bps=bps,
-                wrap_and_unwrap_sol=True,
-            )
-            return str(bundle_id)
-        except Exception as e:
-            last_err = e
-            print(f"[TRADER_LIVE][JITO FAIL] mint={mint[:8]}... bps={bps} err={str(e)[:500]}", flush=True)
-            continue
-
-    raise RuntimeError(f"Jito sell failed: {last_err}")
-
-
-def try_jupiter_sell(mint: str, in_amount_raw: int) -> str:
+def _fetch_quote_once(mint: str, in_amount_raw: int) -> dict:
     """
-    Sell TOKEN -> SOL (NOT USDT).
+    Fetch a Jupiter quote at max slippage once and reuse it across Jito + Jupiter attempts.
+    Using max slippage (last step) prioritises execution over price — correct for sells.
+    Only 1 API call instead of 4+4=8, preventing rate-limit cascades.
+    """
+    import app.executors.jup_executor as jup_mod
+    max_bps = SLIPPAGE_STEPS_BPS[-1]
+    print(f"[TRADER_LIVE][QUOTE] mint={mint[:8]}... bps={max_bps} in_amount_raw={in_amount_raw}", flush=True)
+    quote = jup_mod._jup_get_quote(
+        input_mint=mint,
+        output_mint=SOL_MINT,
+        in_amount_raw=in_amount_raw,
+        slippage_bps=max_bps,
+        timeout_sec=jup_mod.JUP_QUOTE_TIMEOUT_SEC,
+    )
+    return quote
+
+
+def try_jito_sell(mint: str, in_amount_raw: int, quote: dict) -> str:
+    """Submit a TOKEN -> SOL swap as a Jito bundle. Returns bundle_id."""
+    import app.executors.jup_executor as jup_mod
+    from app.executors.jito_executor import _build_tip_tx, _submit_bundle
+    from solders.message import to_bytes_versioned
+    from solders.transaction import VersionedTransaction
+
+    jup_mod._ensure_wallet()
+    wallet = jup_mod._wallet
+    assert wallet is not None
+
+    print(
+        f"[TRADER_LIVE][JITO TRY] mint={mint[:8]}... in_amount_raw={in_amount_raw}",
+        flush=True,
+    )
+    raw_swap_tx = jup_mod._jup_build_swap_tx(
+        quote_response=quote,
+        wrap_and_unwrap_sol=True,
+        timeout_sec=jup_mod.JUP_BUILD_TIMEOUT_SEC,
+    )
+    msg_bytes = to_bytes_versioned(raw_swap_tx.message)
+    sig = wallet.sign_message(msg_bytes)
+    signed_swap_tx = VersionedTransaction.populate(raw_swap_tx.message, [sig])
+    recent_blockhash = raw_swap_tx.message.recent_blockhash
+    tip_tx = _build_tip_tx(wallet, JITO_TIP_LAMPORTS, recent_blockhash)
+    bundle_id = _submit_bundle([signed_swap_tx, tip_tx])
+    return str(bundle_id)
+
+
+def try_jupiter_sell(mint: str, in_amount_raw: int, quote: dict) -> str:
+    """
+    Sell TOKEN -> SOL using a pre-fetched quote.
     in_amount_raw is token base units.
     """
-    last_err: Exception | None = None
+    import app.executors.jup_executor as jup_mod
+    from solders.message import to_bytes_versioned
+    from solders.transaction import VersionedTransaction
 
-    for bps in SLIPPAGE_STEPS_BPS:
-        try:
-            print(
-                f"[TRADER_LIVE][JUP TRY] mint={mint[:8]}... bps={bps} in_amount_raw={in_amount_raw} fast={LIVE_FAST_MODE}",
-                flush=True,
-            )
-            sig, _quote = jup_swap_exact_in(
-                input_mint=mint,
-                output_mint=SOL_MINT,
-                in_amount_raw=in_amount_raw,
-                slippage_bps=bps,
-                wrap_and_unwrap_sol=True,  # output is SOL => unwrap
-                fast_mode=LIVE_FAST_MODE,
-            )
-            return str(sig)
-        except Exception as e:
-            last_err = e
-            print(f"[TRADER_LIVE][JUP FAIL] mint={mint[:8]}... bps={bps} err={str(e)[:500]}", flush=True)
-            continue
+    jup_mod._ensure_wallet()
+    assert jup_mod._wallet is not None
 
-    raise RuntimeError(f"Jupiter sell failed: {last_err}")
+    print(
+        f"[TRADER_LIVE][JUP TRY] mint={mint[:8]}... in_amount_raw={in_amount_raw} fast={LIVE_FAST_MODE}",
+        flush=True,
+    )
+    raw_tx = jup_mod._jup_build_swap_tx(
+        quote_response=quote,
+        wrap_and_unwrap_sol=True,
+        timeout_sec=jup_mod.JUP_BUILD_TIMEOUT_SEC,
+    )
+    msg_bytes = to_bytes_versioned(raw_tx.message)
+    signature = jup_mod._wallet.sign_message(msg_bytes)
+    signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
+
+    from app.executors.jup_executor import _send_signed_tx, RPC_URL as JUP_RPC
+    sig_str = _send_signed_tx(signed_tx, JUP_RPC, fast_mode=LIVE_FAST_MODE)
+    return sig_str
 
 
 def try_raydium_sell(mint: str, in_amount_raw: int) -> str:
@@ -412,10 +443,19 @@ async def loop() -> None:
                     jup_err: str | None = None
                     ray_err: str | None = None
 
+                    # Fetch Jupiter quote ONCE at max slippage — shared by Jito + Jupiter.
+                    # Avoids 8 separate quota API calls (4 Jito + 4 Jupiter slippage ladder).
+                    jup_quote: dict | None = None
+                    try:
+                        jup_quote = _fetch_quote_once(mint, sell_raw)
+                    except Exception as eq:
+                        jup_err = str(eq)[:700]
+                        print(f"[TRADER_LIVE][QUOTE FAIL] call_id={call.id} err={jup_err}", flush=True)
+
                     # 1) Jito bundle (fastest — ~400ms landing)
-                    if USE_JITO:
+                    if USE_JITO and jup_quote is not None:
                         try:
-                            bundle_id = try_jito_sell(mint, sell_raw)
+                            bundle_id = try_jito_sell(mint, sell_raw, jup_quote)
                             jito_confirm = confirm_bundle(bundle_id, timeout_sec=JITO_CONFIRM_TIMEOUT_SEC)
                             if jito_confirm in ("confirmed", "finalized"):
                                 _mark(db, call, status="SENT", reason=reason, method="JITO", tx=bundle_id)
@@ -431,33 +471,34 @@ async def loop() -> None:
                             jito_err = str(ej)[:700]
                             print(f"[TRADER_LIVE][JITO TOTAL FAIL] call_id={call.id} err={jito_err} -> fallback Jupiter", flush=True)
 
-                    # 2) Jupiter (fast, direct RPC)
-                    try:
-                        tx = try_jupiter_sell(mint, sell_raw)
-                        ok = _confirm_fast(tx, LIVE_CONFIRM_MS)
-                        if ok:
-                            _mark(db, call, status="SENT", reason=reason, method="JUPITER", tx=tx)
+                    # 2) Jupiter (fast, direct RPC) — reuse same quote
+                    if jup_quote is not None:
+                        try:
+                            tx = try_jupiter_sell(mint, sell_raw, jup_quote)
+                            ok = _confirm_fast(tx, LIVE_CONFIRM_MS)
+                            if ok:
+                                _mark(db, call, status="SENT", reason=reason, method="JUPITER", tx=tx)
+                                _last_sent[call.id] = now
+                                print(f"[TRADER_LIVE][JUP OK] call_id={call.id} tx={tx}", flush=True)
+                                continue
+
+                            _mark(
+                                db,
+                                call,
+                                status="FALLBACK_GMGN",
+                                reason=reason,
+                                method="JUP_TIMEOUT",
+                                err=f"JUP sig not seen within {LIVE_CONFIRM_MS}ms (tx={tx})",
+                            )
                             _last_sent[call.id] = now
-                            print(f"[TRADER_LIVE][JUP OK] call_id={call.id} tx={tx}", flush=True)
+                            print(f"[TRADER_LIVE][JUP TIMEOUT] call_id={call.id} -> FALLBACK_GMGN tx={tx}", flush=True)
                             continue
 
-                        _mark(
-                            db,
-                            call,
-                            status="FALLBACK_GMGN",
-                            reason=reason,
-                            method="JUP_TIMEOUT",
-                            err=f"JUP sig not seen within {LIVE_CONFIRM_MS}ms (tx={tx})",
-                        )
-                        _last_sent[call.id] = now
-                        print(f"[TRADER_LIVE][JUP TIMEOUT] call_id={call.id} -> FALLBACK_GMGN tx={tx}", flush=True)
-                        continue
+                        except Exception as e1:
+                            jup_err = str(e1)[:700]
+                            print(f"[TRADER_LIVE][JUP TOTAL FAIL] call_id={call.id} err={jup_err}", flush=True)
 
-                    except Exception as e1:
-                        jup_err = str(e1)[:700]
-                        print(f"[TRADER_LIVE][JUP TOTAL FAIL] call_id={call.id} err={jup_err}", flush=True)
-
-                    # 3) Raydium (fast)
+                    # 3) Raydium (fast) — independent of Jupiter, no quote needed
                     try:
                         tx = try_raydium_sell(mint, sell_raw)
                         ok = (tx != "RAYDIUM_NO_SIG") and _confirm_fast(tx, LIVE_CONFIRM_MS)

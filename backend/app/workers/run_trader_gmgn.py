@@ -64,7 +64,12 @@ def pick_ready_calls(db: Session) -> list[tuple[Call, StrategyResult]]:
         .where(c.live_sell_enabled == True)  # noqa: E712
         .where(c.live_sell_status == "FALLBACK_GMGN")  # ONLY fallback
         .where(sr.strategy_key == LIVE_STRATEGY_KEY)
-        .where(c.started_at >= cutoff)  # skip stale signals after restart
+        .where(
+            or_(
+                c.live_buy_status == "SENT",   # already holding — always sell
+                c.started_at >= cutoff,         # fresh signal — apply normal age gate
+            )
+        )
         .order_by(c.started_at.asc())
         .limit(50)
     )

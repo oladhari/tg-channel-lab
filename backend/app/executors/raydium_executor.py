@@ -15,6 +15,7 @@ from solana.rpc.types import TxOpts
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
+from solders.message import to_bytes_versioned
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 
@@ -162,7 +163,9 @@ def _send_v0_txs(base64_txs: List[str], kp: Keypair, rpc_url: str | None = None,
     for i, tx_b64 in enumerate(base64_txs, start=1):
         raw = base64.b64decode(tx_b64)
         vtx = VersionedTransaction.from_bytes(raw)
-        vtx_signed = vtx.sign([kp])
+        msg_bytes = to_bytes_versioned(vtx.message)
+        signature = kp.sign_message(msg_bytes)
+        vtx_signed = VersionedTransaction.populate(vtx.message, [signature])
 
         _log("SEND_TX", idx=i, bytes=len(bytes(vtx_signed)), fast=fast_mode)
         resp = client.send_raw_transaction(

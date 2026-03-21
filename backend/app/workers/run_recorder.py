@@ -298,6 +298,9 @@ def finalize_call(db: Session, call: Call, set_done: bool = True) -> None:
     Pass set_done=False to save the StrategyResult without stopping recording
     (used for early TP/SL live-sell trigger while price collection continues).
     """
+    # Flush any pending inserts (e.g. the triggering PricePoint from record_tick)
+    # before querying, because SessionLocal uses autoflush=False.
+    db.flush()
     rows = db.execute(
         select(PricePoint.t_sec, PricePoint.price_usd)
         .where(PricePoint.call_id == call.id)
