@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.settings import settings
 from app.db.session import SessionLocal
 from app.models import Channel, Call, StrategyResult
-from app.schemas.stats import PaperStatsOut, GridSimOut, GridCellOut, BestStatOut
+from app.schemas.stats import PaperStatsOut, GridSimOut, GridCellOut, BestStatOut, ExplorerCallOut, StrategyExplorerOut
 from app.services.geckoterm import get_top_pool, get_ohlcv_candles, simulate_with_candles
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -561,6 +561,187 @@ def accurate_grid_simulation(
             tp_values=tp_list,
             sl_values=sl_list,
             results=results,
+        )
+
+    finally:
+        db.close()
+
+
+# =========================================================
+# CALLS EXPLORER  (per-call simulation with custom TP/SL)
+# =========================================================
+@router.get("/explorer", response_model=list[ExplorerCallOut])
+def explorer(
+    channel_key: str = Query(..., min_length=1),
+    tp_pct: float = Query(default=35.0, gt=0),
+    sl_pct: float = Query(default=20.0, gt=0, lt=100),
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    """
+    For each DONE call in the given channel, simulate outcome using the
+    caller-supplied TP and SL percentages.
+
+    Reuses _simulate_one_call for first-hit-wins logic (chronological scan
+    of recorded price points, early return on first threshold breach).
+    Price points are batch-loaded via selectinload — no N+1 queries.
+    """
+    db: Session = SessionLocal()
+    try:
+        ch = db.execute(
+            select(Channel).where(Channel.key == channel_key)
+        ).scalar_one_or_none()
+        if not ch:
+            raise HTTPException(status_code=404, detail=f"Channel '{channel_key}' not found")
+
+        calls = list(
+            db.execute(
+                select(Call)
+                .where(Call.channel_id == ch.id)
+                .where(Call.status == "DONE")
+                .where(Call.entry_price_usd.isnot(None))
+                .options(selectinload(Call.prices))
+                .order_by(Call.started_at.desc())
+                .limit(limit)
+            ).scalars().all()
+        )
+
+        out: list[ExplorerCallOut] = []
+        for call in calls:
+            outcome, pnl_pct = _simulate_one_call(call, tp_pct, sl_pct)
+
+            # Walk the same ordered points to find the exact exit price/time.
+            # Mirrors _simulate_one_call's scan so results are always consistent.
+            entry = float(call.entry_price_usd)
+            tp_target = entry * (1.0 + tp_pct / 100.0)
+            sl_target = entry * (1.0 - sl_pct / 100.0)
+            points = sorted(call.prices or [], key=lambda p: p.t_sec)
+
+            exit_t_sec: int | None = None
+            exit_price_usd: float | None = None
+            for p in points:
+                px = float(p.price_usd)
+                if px >= tp_target or px <= sl_target:
+                    exit_t_sec = int(p.t_sec)
+                    exit_price_usd = px
+                    break
+            if exit_t_sec is None and points:
+                exit_t_sec = int(points[-1].t_sec)
+                exit_price_usd = float(points[-1].price_usd)
+
+            out.append(ExplorerCallOut(
+                call_id=call.id,
+                mint=call.mint,
+                symbol=call.symbol,
+                started_at=call.started_at,
+                entry_price_usd=float(call.entry_price_usd),
+                outcome=outcome,
+                pnl_pct=float(round(pnl_pct, 2)),
+                exit_t_sec=exit_t_sec,
+                exit_price_usd=exit_price_usd,
+            ))
+
+        return out
+
+    finally:
+        db.close()
+
+
+# =========================================================
+# BEST STRATEGY EXPLORER  (fixed grid, ranked by avg_pnl)
+# =========================================================
+@router.get("/explorer/best-strategy", response_model=StrategyExplorerOut)
+def explorer_best_strategy(
+    channel_key: str = Query(..., min_length=1),
+    limit: int = Query(default=200, ge=1, le=500),
+    ranking_mode: str = Query(default="pnl", pattern="^(pnl|risk_adjusted)$"),
+):
+    """
+    Run the full TP/SL grid (same grid as /stats/best) over the last :limit
+    DONE calls for a channel, then rank every combo by avg_pnl DESC.
+
+    Returns the best combo plus all ranked results.
+    Reuses _simulate_one_call — first-hit-wins, chronological price scan.
+    """
+    db: Session = SessionLocal()
+    try:
+        ch = db.execute(
+            select(Channel).where(Channel.key == channel_key)
+        ).scalar_one_or_none()
+        if not ch:
+            raise HTTPException(status_code=404, detail=f"Channel '{channel_key}' not found")
+
+        calls = list(
+            db.execute(
+                select(Call)
+                .where(Call.channel_id == ch.id)
+                .where(Call.status == "DONE")
+                .where(Call.entry_price_usd.isnot(None))
+                .options(selectinload(Call.prices))
+                .order_by(Call.started_at.desc())
+                .limit(limit)
+            ).scalars().all()
+        )
+
+        if not calls:
+            return StrategyExplorerOut(
+                channel_key=channel_key,
+                n_calls=0,
+                best_tp_pct=None,
+                best_sl_pct=None,
+                all_results=[],
+            )
+
+        trade_entry_sol = float(getattr(settings, "PAPER_ENTRY_SOL", 0.1))
+        start_balance   = 1.0
+
+        results: list[GridCellOut] = []
+        for tp in _BEST_TP:
+            for sl in _BEST_SL:
+                bal = float(start_balance)
+                n_trades = tp_n = sl_n = time_n = 0
+                sum_pnl = 0.0
+
+                for call in calls:
+                    outcome, pnl_pct = _simulate_one_call(call, float(tp), float(sl))
+                    n_trades += 1
+                    sum_pnl  += pnl_pct
+                    out = outcome.upper()
+                    if out == "TP":
+                        tp_n += 1
+                    elif out == "SL":
+                        sl_n += 1
+                    else:
+                        time_n += 1
+                    pos  = min(trade_entry_sol, bal)
+                    bal += pos * (pnl_pct / 100.0)
+
+                avg_pnl  = (sum_pnl / n_trades) if n_trades else 0.0
+                win_rate = (100.0 * tp_n / n_trades) if n_trades else 0.0
+                score = (avg_pnl * win_rate) if ranking_mode == "risk_adjusted" else avg_pnl
+                results.append(GridCellOut(
+                    tp_pct=float(tp),
+                    sl_pct=float(sl),
+                    n_trades=n_trades,
+                    tp=tp_n,
+                    sl=sl_n,
+                    time=time_n,
+                    win_rate_tp_pct=_round2(win_rate),
+                    avg_pnl_pct=_round2(avg_pnl),
+                    score=_round2(score),
+                    start_balance_sol=_round2(start_balance),
+                    end_balance_sol=_round2(bal),
+                ))
+
+        # Primary: score DESC  Secondary: win_rate DESC
+        results.sort(key=lambda r: (r.score if r.score is not None else r.avg_pnl_pct, r.win_rate_tp_pct), reverse=True)
+        best = results[0] if results else None
+
+        return StrategyExplorerOut(
+            channel_key=channel_key,
+            n_calls=len(calls),
+            best_tp_pct=best.tp_pct if best else None,
+            best_sl_pct=best.sl_pct if best else None,
+            all_results=results,
         )
 
     finally:

@@ -14,6 +14,38 @@ A research and automated trading system for Solana token calls from Telegram cha
 
 ---
 
+## Features
+
+### Calls Explorer
+
+Navigate to `/explorer` to simulate any TP/SL combination against every recorded call for a channel.
+
+- Select a channel, enter TP % and SL %
+- Simulates each call independently using **first-hit-wins** logic (chronological price scan)
+- Shows per-call outcome (TP / SL / TIME), PnL %, exit timing, and entry/exit prices
+- Summary bar: total calls, TP/SL/TIME counts, win rate, avg PnL
+
+### Best Strategy Finder
+
+Click **"Find Best Strategy"** on the Explorer page to run the full TP/SL grid against a channel's calls.
+
+- Scans 153 combinations (TP 20→100%, SL 10→50%)
+- Returns the top-ranked combo and a top-10 leaderboard
+- One-click **"Apply to inputs"** copies the best TP/SL into the Explorer fields
+
+### Ranking Modes
+
+Choose how strategies are ranked via the **Ranking** dropdown before clicking "Find Best Strategy":
+
+| Mode | Sort key | Best for |
+|------|----------|----------|
+| **Highest PnL** (default) | `avg_pnl DESC` | Maximising raw return |
+| **Risk-adjusted** | `avg_pnl × win_rate DESC` | More stable strategies with consistent hit rate |
+
+The **score** column in the result table reflects whichever mode is active.
+
+---
+
 ## Requirements
 
 - [Docker](https://docs.docker.com/get-docker/) + [Docker Compose](https://docs.docker.com/compose/install/)
@@ -368,7 +400,8 @@ tg-channel-lab/
 │   └── src/app/
 │       ├── page.tsx        # Main dashboard + wallet panel
 │       ├── live/           # Live Monitor (auto-refresh, signal timing)
-│       └── calls/          # Call detail pages
+│       ├── calls/          # Call detail pages
+│       └── explorer/       # Calls Explorer + Best Strategy finder
 ├── sessions/               # Telegram session files (gitignored)
 ├── docker-compose.yml
 └── .env                    # Your secrets (gitignored)
