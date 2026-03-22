@@ -313,6 +313,7 @@ export type GridCell = {
   time: number;
   win_rate_tp_pct: number;
   avg_pnl_pct: number;
+  score: number | null;
   start_balance_sol: number;
   end_balance_sol: number;
 };
@@ -325,6 +326,54 @@ export type GridSim = {
   sl_values: number[];
   results: GridCell[];
 };
+
+export type ExplorerRow = {
+  call_id: number;
+  mint: string;
+  symbol: string | null;
+  started_at: string;
+  entry_price_usd: number | null;
+  outcome: string;      // TP | SL | TIME
+  pnl_pct: number;
+  exit_t_sec: number | null;
+  exit_price_usd: number | null;
+};
+
+export function getExplorer(params: {
+  channel_key: string;
+  tp_pct: number;
+  sl_pct: number;
+  limit?: number;
+}) {
+  const qs = new URLSearchParams({
+    channel_key: params.channel_key,
+    tp_pct: String(params.tp_pct),
+    sl_pct: String(params.sl_pct),
+    limit: String(params.limit ?? 200),
+  });
+  return http<ExplorerRow[]>(`/stats/explorer?${qs.toString()}`);
+}
+
+export type StrategyExplorer = {
+  channel_key: string;
+  n_calls: number;
+  best_tp_pct: number | null;
+  best_sl_pct: number | null;
+  all_results: GridCell[];
+};
+
+export function getBestStrategy(params: {
+  channel_key: string;
+  limit?: number;
+  ranking_mode?: "pnl" | "risk_adjusted";
+}) {
+  const qs = new URLSearchParams({
+    channel_key: params.channel_key,
+    limit: String(params.limit ?? 200),
+    ranking_mode: params.ranking_mode ?? "pnl",
+  });
+  return http<StrategyExplorer>(`/stats/explorer/best-strategy?${qs.toString()}`);
+}
 
 export function getGridSim(params: {
   channel_key: string;
