@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from app.db.session import SessionLocal
-from app.models import Call, Channel, PricePoint, StrategyResult
+from app.models import Call, Channel, PricePoint, PriceCrossEvent, StrategyResult
 from app.workers import pump_ws
 
 DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/"
@@ -41,6 +41,29 @@ NO_PRICE_TIMEOUT_SEC = int(os.getenv("NO_PRICE_TIMEOUT_SEC", "30"))
 # above TP or below SL across multiple polling ticks.
 # Thread-safe for reads/writes under GIL (set.add / in-check are atomic enough).
 _early_exited_ids: set[int] = set()
+
+# ===========================================================================
+# High-frequency recording state
+# ===========================================================================
+
+# First N seconds of a call are recorded in "burst mode" (200ms resolution).
+BURST_DURATION_SEC = int(os.getenv("BURST_DURATION_SEC", "300"))   # default 5 minutes
+BURST_MIN_GAP_SEC  = 0.2   # minimum seconds between burst-mode price points
+NORMAL_MIN_GAP_SEC = 2.0   # minimum seconds between normal-mode price points
+
+# TP and SL thresholds to watch for first-crossing events.
+# Matches the full grid used by best_stats / grid_simulation.
+_TP_WATCH_LEVELS: list[float] = [float(x) for x in range(20, 105, 5)]  # 20, 25, …, 100
+_SL_WATCH_LEVELS: list[float] = [float(x) for x in range(10, 55, 5)]   # 10, 15, …, 50
+
+# call_id → Unix timestamp of the last recorded PricePoint.
+# Written by both the main loop and the live-monitor thread (GIL-safe dict ops).
+_last_recorded_ts: dict[int, float] = {}
+
+# call_id → set of already-crossed level keys, e.g. {"TP_35", "SL_20"}.
+# Populated at startup from DB and updated on each new crossing.
+# Prevents duplicate PriceCrossEvent rows for the same threshold.
+_crossed_levels: dict[int, set[str]] = {}
 
 # Display strategy (only for UI / quick reading)
 TP_PCT = float(os.getenv("DISPLAY_TP_PCT", "35"))
@@ -233,6 +256,110 @@ def compute_display_result(
     return ("TIME", int(t_last), float(px_last), float(pnl_pct))
 
 
+def _load_existing_crosses(db: Session) -> None:
+    """
+    Pre-populate _crossed_levels from DB at startup so we never re-insert
+    a PriceCrossEvent for a level that was already captured before a restart.
+    """
+    rows = db.execute(
+        select(
+            PriceCrossEvent.call_id,
+            PriceCrossEvent.event_type,
+            PriceCrossEvent.level_pct,
+        )
+    ).all()
+    for call_id, event_type, level_pct in rows:
+        prefix = "TP" if event_type == "TP_CROSS" else "SL"
+        key = f"{prefix}_{int(level_pct)}"
+        _crossed_levels.setdefault(call_id, set()).add(key)
+    if rows:
+        print(
+            f"[RECORDER] loaded {len(rows)} existing cross events for "
+            f"{len(_crossed_levels)} calls",
+            flush=True,
+        )
+
+
+def _check_and_record_crosses(
+    db: Session,
+    call: Call,
+    px: float,
+    t_ms_val: int,
+    now_ts: float,
+    source: str,
+) -> None:
+    """
+    Check whether px has crossed any TP or SL threshold for the first time.
+    If yes, insert a PriceCrossEvent row and mark the level as seen in-memory.
+
+    Only fires when entry_price_usd is known.
+    Safe to call from both the main loop and the live-monitor thread —
+    _crossed_levels dict ops are GIL-atomic for single-key reads/writes.
+    """
+    if call.entry_price_usd is None:
+        return
+
+    entry = float(call.entry_price_usd)
+    if entry <= 0:
+        return
+
+    already = _crossed_levels.setdefault(call.id, set())
+    now_dt  = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+
+    for tp_pct in _TP_WATCH_LEVELS:
+        key = f"TP_{int(tp_pct)}"
+        if key not in already and px >= entry * (1.0 + tp_pct / 100.0):
+            db.add(PriceCrossEvent(
+                call_id=call.id,
+                t_ms=t_ms_val,
+                recorded_at=now_dt,
+                price_usd=float(px),
+                event_type="TP_CROSS",
+                level_pct=float(tp_pct),
+                source=source,
+            ))
+            already.add(key)
+
+    for sl_pct in _SL_WATCH_LEVELS:
+        key = f"SL_{int(sl_pct)}"
+        if key not in already and px <= entry * (1.0 - sl_pct / 100.0):
+            db.add(PriceCrossEvent(
+                call_id=call.id,
+                t_ms=t_ms_val,
+                recorded_at=now_dt,
+                price_usd=float(px),
+                event_type="SL_CROSS",
+                level_pct=float(sl_pct),
+                source=source,
+            ))
+            already.add(key)
+
+
+def _write_price_point(
+    db: Session,
+    call: Call,
+    px: float,
+    t_sec: int,
+    t_ms_val: int,
+    now_ts: float,
+    source: str,
+) -> None:
+    """
+    Write one PricePoint row and update the last-recorded timestamp.
+    Does NOT commit — caller is responsible for the transaction.
+    """
+    now_dt = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+    db.add(PricePoint(
+        call_id=call.id,
+        t_sec=t_sec,
+        t_ms=t_ms_val,
+        price_usd=float(px),
+        source=source,
+        recorded_at=now_dt,
+    ))
+    _last_recorded_ts[call.id] = now_ts
+
+
 def record_tick(db: Session, call: Call, now_ts: float) -> float | None:
     """
     Record one price point for this call at the current second (t_sec).
@@ -244,22 +371,19 @@ def record_tick(db: Session, call: Call, now_ts: float) -> float | None:
     pump_ws.subscribe(call.mint)
 
     started_ts = call.started_at.timestamp()
-    t_sec = int(now_ts - started_ts)
-    if t_sec < 0:
-        t_sec = 0
-    if t_sec > call.duration_sec:
-        t_sec = call.duration_sec
+    elapsed    = now_ts - started_ts
+    t_sec      = max(0, min(int(elapsed), call.duration_sec))
+    t_ms_val   = int(elapsed * 1000)
 
-    # Deduplicate per second
-    exists = db.execute(
-        select(PricePoint.id).where(
-            PricePoint.call_id == call.id,
-            PricePoint.t_sec == t_sec,
-        )
-    ).scalar_one_or_none()
-    if exists:
-        return
+    is_burst = elapsed < BURST_DURATION_SEC
+    min_gap  = BURST_MIN_GAP_SEC if is_burst else NORMAL_MIN_GAP_SEC
 
+    # Rate-limit using in-memory timestamp (avoids a DB round-trip per tick)
+    if now_ts - _last_recorded_ts.get(call.id, 0.0) < min_gap:
+        return None
+
+    # Determine price source before fetching (pump_ws cache check is instant)
+    from_ws = pump_ws.get_cached_price(call.mint) is not None
     px = fetch_price_usd(call.mint)
 
     if px is None:
@@ -267,7 +391,9 @@ def record_tick(db: Session, call: Call, now_ts: float) -> float | None:
         if call.entry_price_usd is None and t_sec >= NO_PRICE_TIMEOUT_SEC:
             call.status = "IGNORED_NO_PRICE"
             call.ignore_reason = "no_price_timeout"
-        return
+        return None
+
+    source = "pump_ws" if from_ws else "http"
 
     # First successful price becomes entry — also capture full market snapshot
     if call.entry_price_usd is None:
@@ -285,13 +411,8 @@ def record_tick(db: Session, call: Call, now_ts: float) -> float | None:
                 flush=True,
             )
 
-    db.add(
-        PricePoint(
-            call_id=call.id,
-            t_sec=t_sec,
-            price_usd=float(px),
-        )
-    )
+    _write_price_point(db, call, px, t_sec, t_ms_val, now_ts, source)
+    _check_and_record_crosses(db, call, px, t_ms_val, now_ts, source)
     return float(px)
 
 
@@ -370,7 +491,49 @@ def _live_monitor_thread() -> None:
         db = None
         try:
             db = SessionLocal()
+            now_ts = time.time()
 
+            # ── Burst recording: persist high-frequency points for ALL calls ──────
+            # This is the critical path that fills in the 2s gaps left by the main
+            # loop during the first BURST_DURATION_SEC of a call's life.
+            burst_calls = db.execute(
+                select(Call)
+                .where(Call.status == "RECORDING")
+                .where(Call.entry_price_usd.isnot(None))
+            ).scalars().all()
+
+            for call in burst_calls:
+                started_ts = call.started_at.timestamp()
+                elapsed    = now_ts - started_ts
+                if elapsed >= BURST_DURATION_SEC:
+                    continue  # past burst window — main loop handles it
+
+                # Rate-limit to BURST_MIN_GAP_SEC per call (shared with main loop)
+                if now_ts - _last_recorded_ts.get(call.id, 0.0) < BURST_MIN_GAP_SEC:
+                    continue
+
+                # Try pump_ws cache first (zero cost); HTTP fallback rate-limited per mint
+                from_ws = pump_ws.get_cached_price(call.mint) is not None
+                px: float | None = pump_ws.get_cached_price(call.mint)
+                if px is None:
+                    if now_ts - http_last.get(call.mint, 0.0) >= HTTP_INTERVAL_SEC:
+                        px = _parallel_http_price(call.mint)
+                        http_last[call.mint] = now_ts
+
+                if px is None:
+                    continue
+
+                source  = "pump_ws" if from_ws else "http"
+                t_sec   = max(0, min(int(elapsed), call.duration_sec))
+                t_ms_v  = int(elapsed * 1000)
+
+                _write_price_point(db, call, px, t_sec, t_ms_v, now_ts, source)
+                _check_and_record_crosses(db, call, px, t_ms_v, now_ts, source)
+
+            # Commit burst-mode points before the TP/SL finalize section
+            db.commit()
+
+            # ── Live-trade TP/SL monitoring (existing logic, unchanged) ──────────
             rows = db.execute(
                 select(Call, Channel)
                 .join(Channel, Channel.id == Call.channel_id)
@@ -389,10 +552,9 @@ def _live_monitor_thread() -> None:
 
                 # ── 2. HTTP fallback for graduated / non-pump.fun tokens ──
                 if px is None:
-                    now = time.time()
-                    if now - http_last.get(call.mint, 0.0) >= HTTP_INTERVAL_SEC:
+                    if now_ts - http_last.get(call.mint, 0.0) >= HTTP_INTERVAL_SEC:
                         px = _parallel_http_price(call.mint)
-                        http_last[call.mint] = now
+                        http_last[call.mint] = now_ts
 
                 if px is None:
                     continue
@@ -445,6 +607,13 @@ def _live_monitor_thread() -> None:
 
 def main() -> None:
     print("[RECORDER] started")
+
+    # Pre-load existing threshold crossings so we never re-insert on restart
+    _startup_db = SessionLocal()
+    try:
+        _load_existing_crosses(_startup_db)
+    finally:
+        _startup_db.close()
 
     # Start pump.fun real-time WebSocket feed in background
     pump_ws.start_background()
