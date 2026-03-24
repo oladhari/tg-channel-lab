@@ -63,9 +63,14 @@ def update_channel(channel_id: int, payload: ChannelUpdate):
         if payload.telegram_username is not None:
             ch.telegram_username = payload.telegram_username.strip().lstrip("@")
 
-        # ✅ NEW
-        if getattr(payload, "live_buy_amount_sol", None) is not None:
+        if "live_buy_amount_sol" in payload.model_fields_set:
             ch.live_buy_amount_sol = payload.live_buy_amount_sol  # type: ignore[attr-defined]
+
+        if "live_tp_pct" in payload.model_fields_set:
+            ch.live_tp_pct = payload.live_tp_pct  # type: ignore[attr-defined]
+
+        if "live_sl_pct" in payload.model_fields_set:
+            ch.live_sl_pct = payload.live_sl_pct  # type: ignore[attr-defined]
 
         db.commit()
         db.refresh(ch)

@@ -57,6 +57,7 @@ def live_queue(
                 c.live_buy_status,
                 c.live_buy_sent_at,
                 c.live_buy_amount_sol,
+                ch.live_buy_amount_sol.label("channel_buy_amount_sol"),
                 c.live_buy_error,
                 c.live_sell_enabled,
                 c.live_sell_status,
@@ -146,7 +147,7 @@ def live_wallet():
         ).scalar() or 0
 
         live_channels = db.execute(
-            select(ch.id, ch.key, ch.telegram_username, ch.live_buy_amount_sol)
+            select(ch.id, ch.key, ch.telegram_username, ch.live_buy_amount_sol, ch.live_tp_pct, ch.live_sl_pct)
             .where(ch.live_enabled == True)  # noqa: E712
             .order_by(ch.key)
         ).all()

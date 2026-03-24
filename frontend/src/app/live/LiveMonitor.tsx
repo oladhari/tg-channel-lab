@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { toJST } from "../../lib/time";
 import { gmgnSolanaTokenUrl } from "../../lib/links";
-import { markCallSold, getWallet, getWalletHistory, type WalletInfo, type WalletHistory, type OnChainTrade } from "../../lib/api";
+import { markCallSold, getWallet, getWalletHistory, getLiveConfig, type WalletInfo, type WalletHistory, type OnChainTrade, type LiveConfig } from "../../lib/api";
 
 function secDiff(a: string | null, b: string | null): string {
   if (!a || !b) return "—";
@@ -46,6 +46,7 @@ function outcomeColor(outcome: string | null) {
 export default function LiveMonitor({ initialRows, initialWallet }: { initialRows: any[]; initialWallet: WalletInfo | null }) {
   const [rows, setRows] = useState<any[]>(initialRows);
   const [wallet, setWallet] = useState<WalletInfo | null>(initialWallet);
+  const [liveConfig, setLiveConfig] = useState<LiveConfig | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [now, setNow] = useState<Date>(new Date());
   const [error, setError] = useState<string | null>(null);
@@ -79,14 +80,16 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
 
   const refresh = useCallback(async () => {
     try {
-      const [queueRes, walletData] = await Promise.all([
+      const [queueRes, walletData, configData] = await Promise.all([
         fetch("/api/live/queue?limit=100", { cache: "no-store" }),
         getWallet().catch(() => null),
+        getLiveConfig().catch(() => null),
       ]);
       if (!queueRes.ok) throw new Error(`HTTP ${queueRes.status}`);
       const data = await queueRes.json();
       setRows(data);
       setWallet(walletData);
+      setLiveConfig(configData);
       setLastRefresh(new Date());
       setError(null);
     } catch (e: any) {
@@ -155,6 +158,39 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
         </div>
       </div>
 
+      {/* Live Channels Configuration */}
+      {wallet?.live_channels && wallet.live_channels.length > 0 && (() => {
+        const skMatch = liveConfig?.live_strategy_key?.match(/^tp(\d+)_sl(\d+)$/);
+        const fallbackTp = skMatch ? Number(skMatch[1]) : null;
+        const fallbackSl = skMatch ? Number(skMatch[2]) : null;
+        return (
+          <div style={{ marginBottom: 20, padding: "14px 18px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#15803d", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
+              Live Channels ({wallet.live_channels.length})
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              {wallet.live_channels.map((ch) => {
+                const tp = ch.live_tp_pct ?? fallbackTp;
+                const sl = ch.live_sl_pct ?? fallbackSl;
+                return (
+                  <div key={ch.id} style={{ padding: "8px 14px", background: "#fff", border: "1px solid #bbf7d0", borderRadius: 8, fontSize: 12 }}>
+                    <div style={{ fontWeight: 700, color: "#15803d", marginBottom: 4 }}>@{ch.telegram_username}</div>
+                    <div style={{ color: "#374151" }}>
+                      <span style={{ color: "#16a34a", fontWeight: 600 }}>TP +{tp ?? "?"}%</span>
+                      {" / "}
+                      <span style={{ color: "#dc2626", fontWeight: 600 }}>SL -{sl ?? "?"}%</span>
+                    </div>
+                    <div style={{ color: "#6b7280", marginTop: 2 }}>
+                      {ch.live_buy_amount_sol != null ? `${ch.live_buy_amount_sol} SOL / trade` : "amount: env default"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Status bar */}
       <div style={{ display: "flex", gap: 20, alignItems: "center", marginBottom: 14, fontSize: 13 }}>
         <span style={{ color: "#16a34a", fontWeight: 600 }}>● LIVE</span>
@@ -180,6 +216,7 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
               <tr style={{ background: "#fffbeb", borderBottom: "2px solid #fde68a" }}>
                 <th style={{ textAlign: "left" }}>ID</th>
                 <th style={{ textAlign: "left" }}>Channel</th>
+                <th style={{ textAlign: "left" }}>TP/SL</th>
                 <th style={{ textAlign: "left" }}>Mint</th>
                 <th style={{ textAlign: "left" }}>Signal→Buy</th>
                 <th style={{ textAlign: "left" }}>Holding</th>
@@ -199,10 +236,18 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
                   ? holdSec < 60 ? `${holdSec.toFixed(0)}s` : `${(holdSec / 60).toFixed(1)}m`
                   : "—";
                 const holdWarn = holdSec != null && holdSec > 300; // >5min = orange
+                const skMatch = typeof r.strategy_key === "string" ? r.strategy_key.match(/^tp(\d+)_sl(\d+)$/) : null;
+                const tp = skMatch ? Number(skMatch[1]) : (r.live_tp_pct ?? null);
+                const sl = skMatch ? Number(skMatch[2]) : (r.live_sl_pct ?? null);
                 return (
                   <tr key={r.id} style={{ borderBottom: "1px solid #fef3c7" }}>
                     <td><a href={`/calls/${r.id}`} style={{ textDecoration: "underline" }}>{r.id}</a></td>
                     <td><b>{r.channel_key}</b></td>
+                    <td style={{ fontSize: 11 }}>
+                      {tp != null ? <span style={{ color: "#16a34a", fontWeight: 600 }}>TP +{tp}%</span> : "—"}
+                      {tp != null && sl != null && " / "}
+                      {sl != null ? <span style={{ color: "#dc2626", fontWeight: 600 }}>SL -{sl}%</span> : ""}
+                    </td>
                     <td style={{ fontFamily: "monospace", fontSize: 11 }}>
                       {r.mint ? (
                         <a href={gmgnSolanaTokenUrl(r.mint)} target="_blank" rel="noreferrer" style={{ color: "#1d4ed8" }}>
@@ -250,6 +295,8 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
               <tr style={{ background: "#eff6ff", borderBottom: "2px solid #bfdbfe" }}>
                 <th style={{ textAlign: "left" }}>ID</th>
                 <th style={{ textAlign: "left" }}>Channel</th>
+                <th style={{ textAlign: "left" }}>TP/SL</th>
+                <th style={{ textAlign: "left" }}>Amount</th>
                 <th style={{ textAlign: "left" }}>Mint</th>
                 <th style={{ textAlign: "left" }}>Waiting</th>
                 <th style={{ textAlign: "left" }}>Signal at</th>
@@ -264,10 +311,19 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
                   ? waitSec < 60 ? `${waitSec.toFixed(0)}s` : `${(waitSec / 60).toFixed(1)}m`
                   : "—";
                 const waitWarn = waitSec != null && waitSec > 10;
+                const pendingTp = r.live_tp_pct ?? null;
+                const pendingSl = r.live_sl_pct ?? null;
+                const effectiveAmount = r.live_buy_amount_sol ?? r.channel_buy_amount_sol ?? null;
                 return (
                   <tr key={r.id} style={{ borderBottom: "1px solid #dbeafe" }}>
                     <td><a href={`/calls/${r.id}`} style={{ textDecoration: "underline" }}>{r.id}</a></td>
                     <td><b>{r.channel_key}</b></td>
+                    <td style={{ fontSize: 11 }}>
+                      {pendingTp != null ? <span style={{ color: "#16a34a", fontWeight: 600 }}>TP +{pendingTp}%</span> : "—"}
+                      {pendingTp != null && pendingSl != null && " / "}
+                      {pendingSl != null ? <span style={{ color: "#dc2626", fontWeight: 600 }}>SL -{pendingSl}%</span> : ""}
+                    </td>
+                    <td>{effectiveAmount != null ? `${effectiveAmount} SOL` : "—"}</td>
                     <td style={{ fontFamily: "monospace", fontSize: 11 }}>
                       {r.mint ? (
                         <a href={gmgnSolanaTokenUrl(r.mint)} target="_blank" rel="noreferrer" style={{ color: "#1d4ed8" }}>
@@ -494,6 +550,7 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
                   <th style={{ textAlign: "left", padding: "8px 10px" }}>Channel</th>
                   <th style={{ textAlign: "left", padding: "8px 10px" }}>Mint</th>
                   <th style={{ textAlign: "left", padding: "8px 10px" }}>Configured TP/SL</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px" }}>Amount</th>
                   <th style={{ textAlign: "left", padding: "8px 10px", background: "#f0fdf4" }}>Live trigger</th>
                   <th style={{ textAlign: "left", padding: "8px 10px", background: "#f0fdf4" }}>Live sell</th>
                   <th style={{ textAlign: "left", padding: "8px 10px", background: "#eff6ff" }}>Paper outcome</th>
@@ -545,6 +602,11 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
                         {r.strategy_key && (
                           <div style={{ color: "#9ca3af", fontSize: 10, marginTop: 2 }}>{r.strategy_key}</div>
                         )}
+                      </td>
+                      <td style={{ padding: "8px 10px", fontSize: 11 }}>
+                        {(r.live_buy_amount_sol ?? r.channel_buy_amount_sol) != null
+                          ? `${r.live_buy_amount_sol ?? r.channel_buy_amount_sol} SOL`
+                          : "—"}
                       </td>
                       <td style={{ padding: "8px 10px", background: "#f0fdf4" }}>
                         <span style={{

@@ -224,6 +224,8 @@ export type WalletInfo = {
     key: string;
     telegram_username: string;
     live_buy_amount_sol: number | null;
+    live_tp_pct: number | null;
+    live_sl_pct: number | null;
   }>;
 };
 
