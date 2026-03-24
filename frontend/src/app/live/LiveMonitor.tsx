@@ -118,6 +118,9 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
   const pending = rows.filter(
     (r) => r.live_buy_status === "NONE" && r.status === "RECORDING"
   );
+  const expired = rows.filter(
+    (r) => r.live_buy_status === "EXPIRED"
+  );
 
   const S = {
     card:    { padding: 20, background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 12 } as const,
@@ -342,6 +345,37 @@ export default function LiveMonitor({ initialRows, initialWallet }: { initialRow
           </table>
         )}
       </section>
+
+      {/* ── Expired (too old to buy) ── */}
+      {expired.length > 0 && (
+        <section style={{ marginBottom: 28 }}>
+          <h3 style={{ margin: "0 0 8px", color: "#9ca3af", fontSize: 14 }}>
+            Expired — signal too old ({expired.length})
+          </h3>
+          <table cellPadding={7} style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
+                <th style={{ textAlign: "left", color: "#9ca3af" }}>ID</th>
+                <th style={{ textAlign: "left", color: "#9ca3af" }}>Channel</th>
+                <th style={{ textAlign: "left", color: "#9ca3af" }}>Mint</th>
+                <th style={{ textAlign: "left", color: "#9ca3af" }}>Signal at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {expired.map((r) => (
+                <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6", color: "#9ca3af" }}>
+                  <td><a href={`/calls/${r.id}`} style={{ color: "#9ca3af" }}>{r.id}</a></td>
+                  <td>{r.channel_key}</td>
+                  <td style={{ fontFamily: "monospace", fontSize: 11 }}>
+                    {r.mint ? `${String(r.mint).slice(0, 12)}…` : ""}
+                  </td>
+                  <td style={{ fontSize: 11 }}>{toJST(r.started_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       {/* ── On-Chain Wallet History (Helius) ── */}
       <section style={{ marginBottom: 32, borderTop: "2px solid #e5e7eb", paddingTop: 24 }}>

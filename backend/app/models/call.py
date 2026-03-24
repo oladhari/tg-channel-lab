@@ -94,7 +94,7 @@ class Call(Base):
     # TP | SL | TIME
 
     live_sell_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-    live_sell_error: Mapped[str | None] = mapped_column(String(300), default=None)
+    live_sell_error: Mapped[str | None] = mapped_column(Text, default=None)
     
     # =========================
     # LIVE BUY (GMGN)
@@ -107,4 +107,4 @@ class Call(Base):
     live_buy_amount_sol: Mapped[float | None] = mapped_column(Float, default=None)
 
     live_buy_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-    live_buy_error: Mapped[str | None] = mapped_column(String(300), default=None)
+    live_buy_error: Mapped[str | None] = mapped_column(Text, default=None)

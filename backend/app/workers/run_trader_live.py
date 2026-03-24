@@ -42,7 +42,8 @@ def _channel_strategy_key(ch: Channel) -> str:
 TRADER_POLL_SEC = float(os.getenv("TRADER_POLL_SEC", "2"))
 SELL_COOLDOWN_SEC = int(os.getenv("LIVE_SELL_COOLDOWN_SEC", "15"))
 # Max age of signal to sell — skip sells for calls older than this (safety net)
-MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))  # 5 minutes
+# NOTE: calls with live_buy_status=SENT (holding token) always bypass this gate
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "30"))
 # Jito bundle confirmation timeout before falling back to Jupiter
 JITO_CONFIRM_TIMEOUT_SEC = float(os.getenv("LIVE_JITO_CONFIRM_SEC", "3.0"))
 
@@ -272,7 +273,7 @@ def _mark(
     call.live_sell_status = status
     call.live_sell_sent_at = datetime.now(timezone.utc)
     call.live_sell_reason = reason
-    call.live_sell_error = err[:300] if err else None
+    call.live_sell_error = err or None
 
     db.add(call)
     db.commit()

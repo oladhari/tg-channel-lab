@@ -21,7 +21,7 @@ LIVE_BUY_AMOUNT_SOL = float(os.getenv("LIVE_BUY_AMOUNT_SOL", "0.1"))
 
 BUY_POLL_SEC = float(os.getenv("BUYER_POLL_SEC", "1"))
 BUY_COOLDOWN_SEC = int(os.getenv("GMGN_BUY_COOLDOWN_SEC", "15"))
-MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "30"))
 
 TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"])
 TELEGRAM_API_HASH = os.environ["TELEGRAM_API_HASH"]
@@ -165,7 +165,7 @@ async def loop() -> None:
 
                 except Exception as e:
                     call.live_buy_status = "ERROR"
-                    call.live_buy_error = str(e)[:300]
+                    call.live_buy_error = str(e)
 
                     _last_sent[call.id] = now
                     db.add(call)
