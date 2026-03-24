@@ -386,7 +386,7 @@ async def loop() -> None:
                             jito_err = f"Jito bundle dropped/timeout (bundle={bundle_id})"
                         print(f"[BUYER_LIVE][JITO NO CONFIRM] call_id={call.id} {jito_err} -> fallback Jupiter", flush=True)
                     except Exception as ej:
-                        jito_err = str(ej)[:700]
+                        jito_err = str(ej)
                         print(f"[BUYER_LIVE][JITO TOTAL FAIL] call_id={call.id} err={jito_err} -> fallback Jupiter", flush=True)
 
                 # 2) Jupiter (fast, direct RPC)
@@ -412,7 +412,7 @@ async def loop() -> None:
                     continue
 
                 except Exception as e1:
-                    jup_err = str(e1)[:700]
+                    jup_err = str(e1)
                     print(f"[BUYER_LIVE][JUP TOTAL FAIL] call_id={call.id} err={jup_err}", flush=True)
 
                 # 3) Raydium (fast)
@@ -438,7 +438,7 @@ async def loop() -> None:
                     continue
 
                 except Exception as e2:
-                    ray_err = str(e2)[:700]
+                    ray_err = str(e2)
 
                 combined = f"JITO: {jito_err} | JUPITER: {jup_err} | RAYDIUM: {ray_err}"
                 _mark(
@@ -446,12 +446,12 @@ async def loop() -> None:
                     call,
                     status="FALLBACK_GMGN",
                     method="AUTO_FAIL",
-                    err=combined[:900],
+                    err=combined,
                     amount_used=None,  # don't lock amount on fallback
                 )
                 _last_sent[call.id] = now
                 print(f"[BUYER_LIVE][AUTO FAIL] call_id={call.id} -> FALLBACK_GMGN", flush=True)
-                print(f"[BUYER_LIVE][AUTO FAIL][DETAIL] {combined[:900]}", flush=True)
+                print(f"[BUYER_LIVE][AUTO FAIL][DETAIL] {combined}", flush=True)
 
         except Exception as fatal:
             print(f"[BUYER_LIVE][FATAL] loop exception: {fatal}", flush=True)

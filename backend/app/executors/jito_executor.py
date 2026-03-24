@@ -169,35 +169,28 @@ def jup_swap_jito(
         tip_lamports=tip,
     )
 
-    # 1) Get Jupiter quote
-    quote = jup_mod._jup_get_quote(
+    # 1) Get unsigned swap TX via Ultra (single call, no RPS limit)
+    _log("ULTRA_ORDER")
+    raw_swap_tx, _ = jup_mod._ultra_get_order(
         input_mint=input_mint,
         output_mint=output_mint,
         in_amount_raw=in_amount_raw,
         slippage_bps=slippage_bps,
-        timeout_sec=jup_mod.JUP_QUOTE_TIMEOUT_SEC,
+        timeout_sec=jup_mod.JUP_ULTRA_TIMEOUT_SEC,
     )
 
-    # 2) Build unsigned swap TX from Jupiter
-    _log("BUILD_TX")
-    raw_swap_tx = jup_mod._jup_build_swap_tx(
-        quote_response=quote,
-        wrap_and_unwrap_sol=wrap_and_unwrap_sol,
-        timeout_sec=jup_mod.JUP_BUILD_TIMEOUT_SEC,
-    )
-
-    # 3) Sign the swap TX
+    # 2) Sign the swap TX
     msg_bytes = to_bytes_versioned(raw_swap_tx.message)
     sig = wallet.sign_message(msg_bytes)
     signed_swap_tx = VersionedTransaction.populate(raw_swap_tx.message, [sig])
 
-    # 4) Build tip TX with the SAME blockhash (required for bundle atomicity)
+    # 3) Build tip TX with the SAME blockhash (required for bundle atomicity)
     recent_blockhash = raw_swap_tx.message.recent_blockhash
     tip_tx = _build_tip_tx(wallet, tip, recent_blockhash)
 
-    # 5) Submit bundle [swap, tip]
+    # 4) Submit bundle [swap, tip]
     _log("SUBMIT_BUNDLE", tip_lamports=tip)
     bundle_id = _submit_bundle([signed_swap_tx, tip_tx], timeout_sec=JITO_TIMEOUT_SEC)
     _log("OK", bundle_id=bundle_id)
 
-    return bundle_id, quote
+    return bundle_id, {}
