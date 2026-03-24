@@ -527,8 +527,12 @@ def _live_monitor_thread() -> None:
                 t_sec   = max(0, min(int(elapsed), call.duration_sec))
                 t_ms_v  = int(elapsed * 1000)
 
-                _write_price_point(db, call, px, t_sec, t_ms_v, now_ts, source)
-                _check_and_record_crosses(db, call, px, t_ms_v, now_ts, source)
+                try:
+                    _write_price_point(db, call, px, t_sec, t_ms_v, now_ts, source)
+                    _check_and_record_crosses(db, call, px, t_ms_v, now_ts, source)
+                except Exception as be:
+                    db.rollback()
+                    print(f"[RECORDER][BURST_ERR] call_id={call.id} {be}", flush=True)
 
             # Commit burst-mode points before the TP/SL finalize section
             db.commit()
@@ -584,6 +588,11 @@ def _live_monitor_thread() -> None:
 
                 try:
                     finalize_call(db, call, set_done=False)
+                    # Mark sell as handled — GMGN auto-sell took care of execution.
+                    # This keeps the dashboard accurate when trader-live is not running.
+                    call.live_sell_status = "SENT"
+                    call.live_sell_reason = label
+                    call.live_sell_sent_at = datetime.fromtimestamp(now_ts, tz=timezone.utc)
                     db.commit()
                     _early_exited_ids.add(call.id)
                 except Exception as fe:
@@ -650,6 +659,12 @@ def main() -> None:
                 # Call-level duration check
                 if elapsed >= call.duration_sec:
                     finalize_call(db, call)
+                    # If the call was bought but never marked sold (GMGN auto-sell handled it),
+                    # mark it as TIME exit now so it leaves the dashboard "holding" view.
+                    if call.live_buy_status == "SENT" and call.live_sell_status == "NONE":
+                        call.live_sell_status = "SENT"
+                        call.live_sell_reason = "TIME"
+                        call.live_sell_sent_at = datetime.now(timezone.utc)
                     continue
 
                 # Record one tick; returns the fetched price (or None)

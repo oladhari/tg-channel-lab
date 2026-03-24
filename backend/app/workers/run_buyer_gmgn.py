@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from telethon import TelegramClient
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import SessionLocal
@@ -87,6 +87,27 @@ async def gmgn_buy(mint: str, amount_sol: float) -> None:
     await client.send_message(GMGN_TARGET, cmd)
 
 
+def expire_stale_calls(db: Session) -> int:
+    """Mark NONE calls older than MAX_SIGNAL_AGE_SEC as EXPIRED so they leave the pending view."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
+    stale = db.execute(
+        select(Call)
+        .where(Call.live_buy_status == "NONE")
+        .where(Call.live_buy_enabled == True)  # noqa: E712
+        .where(Call.started_at < cutoff)
+    ).scalars().all()
+    count = 0
+    for call in stale:
+        call.live_buy_status = "EXPIRED"
+        call.live_buy_error = f"Signal too old (>{MAX_SIGNAL_AGE_SEC}s) — skipped"
+        db.add(call)
+        count += 1
+    if count:
+        db.commit()
+        print(f"[BUYER_GMGN][EXPIRE] marked {count} stale call(s) as EXPIRED", flush=True)
+    return count
+
+
 def pick_ready_calls(db: Session) -> list[Call]:
     c = Call
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
@@ -94,9 +115,8 @@ def pick_ready_calls(db: Session) -> list[Call]:
         select(c)
         .options(joinedload(c.channel))  # IMPORTANT: load Channel for UI amount
         .where(c.live_buy_enabled == True)  # noqa: E712
-        .where(c.live_buy_status == "FALLBACK_GMGN")
+        .where(or_(c.live_buy_status == "NONE", c.live_buy_status == "FALLBACK_GMGN"))
         .where(c.status == "RECORDING")
-        .where(c.entry_price_usd.isnot(None))
         .where(c.started_at >= cutoff)  # skip stale signals after restart
         .order_by(c.started_at.asc())
         .limit(50)
@@ -124,6 +144,7 @@ async def loop() -> None:
     while True:
         db = SessionLocal()
         try:
+            expire_stale_calls(db)
             calls = pick_ready_calls(db)
 
             for call in calls:
