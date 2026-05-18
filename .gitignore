@@ -63,3 +63,8 @@ docker-compose.override.yml
 # --- project local scratch / generated ---
 typescript/
 *.tsbuildinfo
+
+# --- data files ---
+*.csv
+*.tsv
+*.parquet

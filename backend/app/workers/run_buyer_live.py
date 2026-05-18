@@ -26,7 +26,7 @@ LIVE_BUY_AMOUNT_SOL = float(os.getenv("LIVE_BUY_AMOUNT_SOL", "0.1"))
 BUY_POLL_SEC = float(os.getenv("BUYER_POLL_SEC", "1"))
 BUY_COOLDOWN_SEC = int(os.getenv("LIVE_BUY_COOLDOWN_SEC", "15"))
 # Max age of signal to buy — skip calls older than this (prevents stale buys after restart)
-MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))  # 5 minutes
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "30"))  # 30 seconds default
 # Jito bundle confirmation timeout before falling back to Jupiter
 JITO_CONFIRM_TIMEOUT_SEC = float(os.getenv("LIVE_JITO_CONFIRM_SEC", "3.0"))
 
@@ -164,6 +164,33 @@ def pick_ready_calls(db: Session) -> list[Call]:
         .limit(50)
     )
     return list(db.execute(stmt).scalars().all())
+
+
+def expire_stale_calls(db: Session) -> int:
+    """Mark NONE calls older than MAX_SIGNAL_AGE_SEC as EXPIRED so they leave the queue."""
+    from datetime import timedelta
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
+
+    stale = db.execute(
+        select(Call)
+        .where(Call.live_buy_status == "NONE")
+        .where(Call.live_buy_enabled == True)
+        .where(Call.started_at < cutoff)
+    ).scalars().all()
+
+    count = 0
+    for call in stale:
+        call.live_buy_status = "EXPIRED"
+        call.live_buy_error = f"Signal too old (>{MAX_SIGNAL_AGE_SEC}s) — skipped"
+        db.add(call)
+        count += 1
+
+    if count:
+        db.commit()
+        print(f"[BUYER_LIVE][EXPIRE] marked {count} stale call(s) as EXPIRED (age>{MAX_SIGNAL_AGE_SEC}s)", flush=True)
+
+    return count
 
 
 async def open_db_retry(max_wait_sec: int = 60) -> Session:
@@ -305,6 +332,7 @@ async def loop() -> None:
     while True:
         db = await open_db_retry()
         try:
+            expire_stale_calls(db)
             calls = pick_ready_calls(db)
 
             for call in calls:
@@ -358,7 +386,7 @@ async def loop() -> None:
                             jito_err = f"Jito bundle dropped/timeout (bundle={bundle_id})"
                         print(f"[BUYER_LIVE][JITO NO CONFIRM] call_id={call.id} {jito_err} -> fallback Jupiter", flush=True)
                     except Exception as ej:
-                        jito_err = str(ej)[:700]
+                        jito_err = str(ej)
                         print(f"[BUYER_LIVE][JITO TOTAL FAIL] call_id={call.id} err={jito_err} -> fallback Jupiter", flush=True)
 
                 # 2) Jupiter (fast, direct RPC)
@@ -384,7 +412,7 @@ async def loop() -> None:
                     continue
 
                 except Exception as e1:
-                    jup_err = str(e1)[:700]
+                    jup_err = str(e1)
                     print(f"[BUYER_LIVE][JUP TOTAL FAIL] call_id={call.id} err={jup_err}", flush=True)
 
                 # 3) Raydium (fast)
@@ -410,7 +438,7 @@ async def loop() -> None:
                     continue
 
                 except Exception as e2:
-                    ray_err = str(e2)[:700]
+                    ray_err = str(e2)
 
                 combined = f"JITO: {jito_err} | JUPITER: {jup_err} | RAYDIUM: {ray_err}"
                 _mark(
@@ -418,12 +446,12 @@ async def loop() -> None:
                     call,
                     status="FALLBACK_GMGN",
                     method="AUTO_FAIL",
-                    err=combined[:900],
+                    err=combined,
                     amount_used=None,  # don't lock amount on fallback
                 )
                 _last_sent[call.id] = now
                 print(f"[BUYER_LIVE][AUTO FAIL] call_id={call.id} -> FALLBACK_GMGN", flush=True)
-                print(f"[BUYER_LIVE][AUTO FAIL][DETAIL] {combined[:900]}", flush=True)
+                print(f"[BUYER_LIVE][AUTO FAIL][DETAIL] {combined}", flush=True)
 
         except Exception as fatal:
             print(f"[BUYER_LIVE][FATAL] loop exception: {fatal}", flush=True)

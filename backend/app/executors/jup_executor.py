@@ -17,14 +17,20 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 
 RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
 
-JUP_BASE_URL = os.getenv("JUP_BASE_URL", "https://lite-api.jup.ag").strip().rstrip("/")
+JUP_BASE_URL = os.getenv("JUP_BASE_URL", "https://api.jup.ag").strip().rstrip("/")
+
+# Ultra API (primary — single call, no RPS cap, free)
+JUP_ULTRA_ORDER_URL = f"{JUP_BASE_URL}/ultra/v1/order"
+
+# Legacy swap endpoints (kept as internal fallback)
 JUP_QUOTE_URL = f"{JUP_BASE_URL}/swap/v1/quote"
 JUP_SWAP_URL = f"{JUP_BASE_URL}/swap/v1/swap"
 
-# Optional Jupiter API key — avoids 429 on the free public endpoint.
-# Set JUP_API_KEY in .env and use JUP_BASE_URL=https://api.jup.ag (paid endpoint).
 JUP_API_KEY = os.getenv("JUP_API_KEY", "").strip()
 _JUP_HEADERS = {"Authorization": f"Bearer {JUP_API_KEY}"} if JUP_API_KEY else {}
+
+# Ultra timeout — /order is a single round-trip (~200-500ms normally)
+JUP_ULTRA_TIMEOUT_SEC = float(os.getenv("JUP_ULTRA_TIMEOUT_SEC", "8.0"))
 
 MAX_SEND_RETRIES = int(os.getenv("JUP_MAX_SEND_RETRIES", "3"))
 
@@ -178,6 +184,36 @@ def _jup_build_swap_tx(
     return VersionedTransaction.from_bytes(tx_bytes)  # UNSIGNED
 
 
+def _ultra_get_order(
+    *,
+    input_mint: str,
+    output_mint: str,
+    in_amount_raw: int,
+    slippage_bps: int,
+    timeout_sec: float,
+) -> tuple[VersionedTransaction, str]:
+    """
+    Call Ultra /order endpoint. Single API call — replaces _jup_get_quote + _jup_build_swap_tx.
+    Returns (unsigned_tx, request_id). No RPS cap on Ultra plan.
+    """
+    payload = {
+        "inputMint": input_mint,
+        "outputMint": output_mint,
+        "amount": int(in_amount_raw),
+        "taker": _WALLET_PUBKEY_STR,
+        "slippageBps": int(slippage_bps),
+    }
+    r = requests.post(JUP_ULTRA_ORDER_URL, json=payload, headers=_JUP_HEADERS, timeout=timeout_sec)
+    if r.status_code != 200:
+        raise RuntimeError(f"Jupiter Ultra order error {r.status_code}: {r.text[:250]}")
+    data = r.json()
+    tx_b64 = data.get("transaction")
+    request_id = data.get("requestId") or ""
+    if not tx_b64:
+        raise RuntimeError(f"Jupiter Ultra order missing transaction: {data}")
+    return VersionedTransaction.from_bytes(base64.b64decode(tx_b64)), request_id
+
+
 def jup_swap_exact_in(
     *,
     input_mint: str,
@@ -199,56 +235,37 @@ def jup_swap_exact_in(
 
     _ensure_wallet(private_key)
 
-    _log(
-        "START",
-        input=input_mint,
-        output=output_mint,
-        amount=in_amount_raw,
-        bps=slippage_bps,
-        fast=fast,
-        quoteTimeout=quote_timeout,
-        buildTimeout=build_timeout,
-        priorityLevel=os.getenv("JUP_PRIORITY_LEVEL", "veryHigh"),
-        maxLamports=os.getenv("JUP_MAX_PRIORITY_FEE_LAMPORTS", "1000000"),
-    )
-
-    quote = _jup_get_quote(
-        input_mint=input_mint,
-        output_mint=output_mint,
-        in_amount_raw=in_amount_raw,
-        slippage_bps=slippage_bps,
-        timeout_sec=quote_timeout,
-    )
+    _log("ULTRA_START", input=input_mint[:8], output=output_mint[:8], amount=in_amount_raw, bps=slippage_bps, fast=fast)
 
     last_error: Optional[Exception] = None
 
     for attempt in range(1, MAX_SEND_RETRIES + 1):
         try:
-            _log("BUILD_TX", attempt=attempt)
-            raw_tx = _jup_build_swap_tx(
-                quote_response=quote,
-                wrap_and_unwrap_sol=wrap_and_unwrap_sol,
-                timeout_sec=build_timeout,
+            # Single Ultra API call — replaces quote + build (no RPS limit)
+            _log("ULTRA_ORDER", attempt=attempt)
+            raw_tx, _ = _ultra_get_order(
+                input_mint=input_mint,
+                output_mint=output_mint,
+                in_amount_raw=in_amount_raw,
+                slippage_bps=slippage_bps,
+                timeout_sec=JUP_ULTRA_TIMEOUT_SEC,
             )
-
-            # AGGRESSIVE: NO SIMULATE (too slow)
-            _log("SIMULATE_SKIP", attempt=attempt, fast=fast)
 
             assert _wallet is not None, "Wallet not loaded"
             msg_bytes = to_bytes_versioned(raw_tx.message)
             signature = _wallet.sign_message(msg_bytes)
             signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
-            _log("SEND", attempt=attempt, fast=fast)
+            _log("ULTRA_SEND", attempt=attempt, fast=fast)
             sig_str = _send_signed_tx(signed_tx, rpc_url, fast_mode=fast)
-            _log("OK", sig=sig_str, attempt=attempt)
-            return sig_str, quote
+            _log("ULTRA_OK", sig=sig_str, attempt=attempt)
+            return sig_str, {}
 
         except Exception as e:
             last_error = e
-            _log("FAIL", attempt=attempt, err=str(e)[:500])
+            _log("ULTRA_FAIL", attempt=attempt, err=str(e)[:500])
             if _is_blockhash_error(str(e)) and attempt < MAX_SEND_RETRIES:
-                continue
+                continue  # fresh _ultra_get_order on next attempt = fresh blockhash
             break
 
-    raise RuntimeError(f"Jupiter swap failed: {last_error}")
+    raise RuntimeError(f"Jupiter Ultra swap failed: {last_error}")

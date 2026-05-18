@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1"]
       interval: 5s
@@ -25,7 +25,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/alembic/versions:/app/alembic/versions
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/channels')\" 2>/dev/null || exit 1"]
       interval: 5s
@@ -45,7 +45,7 @@ services:
       - api
     ports:
       - "3000:3000"
-    restart: unless-stopped
+    restart: "no"
 
   # 🛠 DEV frontend (only when you need hot reload)
   # Run with: docker compose --profile dev up -d frontend-dev
@@ -68,7 +68,7 @@ services:
       - ./frontend:/app
       - /app/node_modules
       - /app/.next
-    restart: unless-stopped
+    restart: "no"
 
   listener:
     build: ./backend
@@ -80,7 +80,7 @@ services:
     volumes:
       - ./sessions:/app/sessions
       - ./backend/alembic/versions:/app/alembic/versions
-    restart: unless-stopped
+    restart: "no"
 
   recorder:
     build: ./backend
@@ -92,7 +92,7 @@ services:
     volumes:
       - ./sessions:/app/sessions
       - ./backend/alembic/versions:/app/alembic/versions
-    restart: unless-stopped
+    restart: "no"
 
   trader:
     build: ./backend
@@ -103,7 +103,7 @@ services:
         condition: service_healthy
     volumes:
       - ./sessions:/app/sessions
-    restart: unless-stopped
+    restart: "no"
 
   trader-live:
     profiles: ["live"]   # disabled until SOLANA_PRIVATE_KEY is set
@@ -113,7 +113,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
 
   buyer:
     build: ./backend
@@ -124,7 +124,7 @@ services:
         condition: service_healthy
     volumes:
       - ./sessions:/app/sessions
-    restart: unless-stopped
+    restart: "no"
 
   buyer-live:
     profiles: ["live"]   # disabled until SOLANA_PRIVATE_KEY is set
@@ -134,7 +134,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
 
 volumes:
   pgdata:

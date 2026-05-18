@@ -13,14 +13,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
 from app.db.session import SessionLocal
-from app.models import Call, StrategyResult
+from app.models import Call, Channel, StrategyResult
 
 
 GMGN_TARGET = os.getenv("GMGN_TARGET", "").strip()
 GMGN_SELL_PERCENT = os.getenv("GMGN_SELL_PERCENT", "100%").strip()
 LIVE_STRATEGY_KEY = os.getenv("LIVE_STRATEGY_KEY", "tp35_sl20").strip()
 TRADER_POLL_SEC = int(os.getenv("TRADER_POLL_SEC", "2"))
-MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "300"))
+MAX_SIGNAL_AGE_SEC = int(os.getenv("LIVE_MAX_SIGNAL_AGE_SEC", "30"))
 
 SELL_COOLDOWN_SEC = int(os.getenv("GMGN_SELL_COOLDOWN_SEC", os.getenv("GMGN_COOLDOWN_SEC", "45")))
 
@@ -44,16 +44,27 @@ client = TelegramClient(SESSION_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, receiv
 _last_sent: dict[int, float] = {}  # call_id -> ts
 
 
+def _channel_strategy_key(ch: Channel) -> str:
+    """Per-channel TP/SL if set, otherwise global LIVE_STRATEGY_KEY."""
+    tp = getattr(ch, "live_tp_pct", None)
+    sl = getattr(ch, "live_sl_pct", None)
+    if tp is not None and sl is not None:
+        return f"tp{int(tp)}_sl{int(sl)}"
+    return LIVE_STRATEGY_KEY
+
+
 async def gmgn_sell(mint: str) -> None:
     cmd = f"/sell {mint} {GMGN_SELL_PERCENT}"
     await client.send_message(GMGN_TARGET, cmd)
 
 
 def pick_ready_calls(db: Session) -> list[tuple[Call, StrategyResult]]:
-    c, sr = Call, StrategyResult
+    from collections import defaultdict
+    c, sr, ch = Call, StrategyResult, Channel
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAX_SIGNAL_AGE_SEC)
     stmt = (
-        select(c, sr)
+        select(c, sr, ch)
+        .join(ch, ch.id == c.channel_id)
         .join(sr, sr.call_id == c.id)
         .where(
             or_(
@@ -63,7 +74,6 @@ def pick_ready_calls(db: Session) -> list[tuple[Call, StrategyResult]]:
         )
         .where(c.live_sell_enabled == True)  # noqa: E712
         .where(c.live_sell_status == "FALLBACK_GMGN")  # ONLY fallback
-        .where(sr.strategy_key == LIVE_STRATEGY_KEY)
         .where(
             or_(
                 c.live_buy_status == "SENT",   # already holding — always sell
@@ -71,9 +81,25 @@ def pick_ready_calls(db: Session) -> list[tuple[Call, StrategyResult]]:
             )
         )
         .order_by(c.started_at.asc())
-        .limit(50)
+        .limit(200)
     )
-    return list(db.execute(stmt).all())
+    all_rows = list(db.execute(stmt).all())
+
+    # Pick best matching StrategyResult per call (mirrors trader_live logic)
+    grouped: dict[int, list] = defaultdict(list)
+    for call, strat, channel in all_rows:
+        grouped[call.id].append((call, strat, channel))
+
+    result = []
+    for call_id, rows in grouped.items():
+        call, _, channel = rows[0]
+        target_key = _channel_strategy_key(channel)
+        strats = {strat.strategy_key: (call, strat) for _, strat, _ in rows}
+        chosen = strats.get(target_key) or strats.get(LIVE_STRATEGY_KEY) or (rows[0][0], rows[0][1])
+        result.append(chosen)
+
+    result.sort(key=lambda r: r[0].started_at)
+    return result[:50]
 
 
 async def open_db_retry(max_wait_sec: int = 60) -> Session:
@@ -138,7 +164,7 @@ async def loop() -> None:
 
                 except Exception as e:
                     call.live_sell_status = "ERROR"
-                    call.live_sell_error = str(e)[:300]
+                    call.live_sell_error = str(e)
 
                     _last_sent[call.id] = now
                     db.add(call)

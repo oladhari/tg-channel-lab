@@ -160,10 +160,16 @@ def get_call_prices(call_id: int):
         pts = (
             db.query(PricePoint.t_sec, PricePoint.price_usd)
             .filter(PricePoint.call_id == call_id)
-            .order_by(PricePoint.t_sec.asc())
+            .order_by(PricePoint.t_sec.asc(), PricePoint.id.asc())
             .all()
         )
 
-        return [{"t_sec": int(t), "price_usd": float(p)} for (t, p) in pts]
+        # Deduplicate by t_sec — burst mode (200ms) can produce multiple rows with the
+        # same t_sec value. lightweight-charts requires strictly ascending timestamps,
+        # so we keep only the LAST price recorded at each second.
+        seen: dict[int, float] = {}
+        for t, p in pts:
+            seen[int(t)] = float(p)
+        return [{"t_sec": k, "price_usd": v} for k, v in sorted(seen.items())]
     finally:
         db.close()
